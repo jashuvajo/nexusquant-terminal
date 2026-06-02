@@ -2,6 +2,10 @@
 
 NexusQuant is a deployable institutional-style AI scalping terminal scaffold for Indian index options on NIFTY and SENSEX.
 
+## AWS + Vercel deployment
+
+For AWS backend deployment, use ECS Fargate with an Application Load Balancer because the backend exposes WebSockets. See [`docs/AWS_DEPLOYMENT.md`](docs/AWS_DEPLOYMENT.md).
+
 ## Stack
 
 - Frontend: React, TypeScript, Vite, TailwindCSS, Lightweight Charts, Recharts, Framer Motion, WebSocket client
