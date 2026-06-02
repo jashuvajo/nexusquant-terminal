@@ -1,0 +1,162 @@
+export type MarketSymbol = 'NIFTY' | 'SENSEX';
+export type Regime = 'TREND_EXPANSION' | 'RANGE_ABSORPTION' | 'VOLATILITY_COMPRESSION' | 'REVERSAL_RISK';
+export type VolatilityRegime = 'LOW_IV' | 'NORMAL_IV' | 'IV_EXPANSION' | 'EVENT_SPIKE';
+export type StreamStatus = 'connecting' | 'live' | 'fallback';
+
+export interface ActiveTrade {
+  id: string;
+  symbol: MarketSymbol;
+  side: 'CALL' | 'PUT';
+  strike: number;
+  qty: number;
+  entry: number;
+  ltp: number;
+  pnl: number;
+  tqs: number;
+  stop: number;
+  target: number;
+  status: 'SCALPING' | 'TRAILING' | 'PARTIAL_EXIT' | 'SAFE_MODE';
+}
+
+export interface HeatmapCell {
+  id: string;
+  strike: number;
+  side: 'CALL' | 'PUT' | 'FUTURE';
+  liquidity: number;
+  absorption: number;
+  gammaWall: number;
+  stopDensity: number;
+  sweepRisk: number;
+  label: string;
+}
+
+export interface OrderflowState {
+  cumulativeDelta: number;
+  deltaVelocity: number;
+  aggressiveBuyers: number;
+  aggressiveSellers: number;
+  domImbalance: number;
+  liquidityShift: number;
+  sweepDetection: number;
+  volumeAcceleration: number;
+  breakoutVelocity: number;
+}
+
+export interface GreeksState {
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  ivRank: number;
+  ivPercentile: number;
+  ivExpansion: number;
+}
+
+export interface MarketProfileState {
+  poc: number;
+  vah: number;
+  val: number;
+  acceptanceZone: string;
+  volumeProfile: Array<{ level: number; volume: number }>;
+}
+
+export interface EngineScore {
+  engine: string;
+  score: number;
+  weight: number;
+  status: 'pass' | 'watch' | 'fail';
+}
+
+export interface RiskState {
+  safeMode: boolean;
+  dailyDrawdownPct: number;
+  maxDrawdownPct: number;
+  slippageBps: number;
+  staleDataMs: number;
+  apiDisconnects: number;
+  latencyMs: number;
+  spreadWideningPct: number;
+  maxExposurePct: number;
+  cooldownSeconds: number;
+}
+
+export interface InfraState {
+  brokerHealth: number;
+  websocketLatencyMs: number;
+  orderRouterLatencyMs: number;
+  redisHealth: number;
+  postgresHealth: number;
+  prometheusHealth: number;
+}
+
+export interface PortfolioState {
+  capital: number;
+  margin: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  executionQuality: number;
+  positions: number;
+  orders: number;
+}
+
+export interface StrategyRoute {
+  selected: string;
+  aggression: number;
+  sizeMultiplier: number;
+  threshold: number;
+  router: 'SMART_LIMIT' | 'PASSIVE_JOIN' | 'AGGRESSIVE_SWEEP' | 'SAFE_MODE';
+}
+
+export interface TelemetryPoint {
+  time: string;
+  pnl: number;
+  tqs: number;
+  latency: number;
+  volume: number;
+  price: number;
+}
+
+export interface JournalEntry {
+  time: string;
+  instrument: string;
+  tqs: number;
+  pnl: number;
+  exitReason: string;
+}
+
+export interface BacktestMetric {
+  name: string;
+  value: number;
+  unit: string;
+}
+
+export interface TerminalSnapshot {
+  timestamp: string;
+  symbol: MarketSymbol;
+  spot: number;
+  atmStrike: number;
+  premiumFocusZone: string;
+  aiConfidence: number;
+  tradeQualityScore: number;
+  pnl: number;
+  liveExposurePct: number;
+  spreadQuality: number;
+  executionLatencyMs: number;
+  deltaVelocity: number;
+  trailingStopState: string;
+  regime: Regime;
+  volatilityRegime: VolatilityRegime;
+  activeTrades: ActiveTrade[];
+  heatmap: HeatmapCell[];
+  orderflow: OrderflowState;
+  greeks: GreeksState;
+  marketProfile: MarketProfileState;
+  aiMatrix: EngineScore[];
+  risk: RiskState;
+  infra: InfraState;
+  portfolio: PortfolioState;
+  strategy: StrategyRoute;
+  telemetry: TelemetryPoint[];
+  journal: JournalEntry[];
+  backtest: BacktestMetric[];
+}
