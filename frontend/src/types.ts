@@ -1,7 +1,7 @@
 export type MarketSymbol = 'NIFTY' | 'SENSEX';
-export type Regime = 'TREND_EXPANSION' | 'RANGE_ABSORPTION' | 'VOLATILITY_COMPRESSION' | 'REVERSAL_RISK';
+export type Regime = 'TREND_EXPANSION' | 'RANGE_ABSORPTION' | 'VOLATILITY_COMPRESSION' | 'REVERSAL_RISK' | 'CLOSED_MARKET_ANALYSIS';
 export type VolatilityRegime = 'LOW_IV' | 'NORMAL_IV' | 'IV_EXPANSION' | 'EVENT_SPIKE';
-export type StreamStatus = 'connecting' | 'live' | 'fallback';
+export type StreamStatus = 'connecting' | 'live' | 'status' | 'error';
 
 export interface ActiveTrade {
   id: string;
@@ -15,7 +15,7 @@ export interface ActiveTrade {
   tqs: number;
   stop: number;
   target: number;
-  status: 'SCALPING' | 'TRAILING' | 'PARTIAL_EXIT' | 'SAFE_MODE';
+  status: 'SCALPING' | 'TRAILING' | 'PARTIAL_EXIT' | 'SAFE_MODE' | 'BROKER_POSITION';
 }
 
 export interface HeatmapCell {
@@ -131,7 +131,16 @@ export interface BacktestMetric {
 }
 
 export interface TerminalSnapshot {
+  type?: 'snapshot';
   timestamp: string;
+  marketPhase?: 'PRE_MARKET_ANALYSIS' | 'LIVE_MARKET' | 'POST_MARKET_ANALYSIS' | 'CLOSED_MARKET';
+  sessionLabel?: string;
+  sessionReason?: string;
+  executionAllowed?: boolean;
+  liveTradingEnabled?: boolean;
+  aggressiveMode?: boolean;
+  dataSource?: string;
+  dataWarnings?: string[];
   symbol: MarketSymbol;
   spot: number;
   atmStrike: number;

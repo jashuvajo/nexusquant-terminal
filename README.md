@@ -176,6 +176,130 @@ UPSTOX_API_KEY=...
 UPSTOX_API_SECRET=...
 ```
 
+
+## Real Upstox data and trading setup
+
+This version does not generate dummy market prices, fake heatmaps, random PnL, or local fallback ticks. If the backend cannot authenticate with Upstox or cannot fetch the configured option chain, the frontend shows a setup/status panel instead of a simulated terminal.
+
+### Required Render variables for real data
+
+Set these on the Render backend service:
+
+```text
+UPSTOX_API_KEY=your_upstox_api_key
+UPSTOX_API_SECRET=your_upstox_api_secret
+UPSTOX_REDIRECT_URI=https://your-render-api.onrender.com/api/upstox/callback
+PRIMARY_SYMBOL=NIFTY
+NIFTY_INSTRUMENT_KEY=NSE_INDEX|Nifty 50
+SENSEX_INSTRUMENT_KEY=BSE_INDEX|SENSEX
+NIFTY_EXPIRY_DATE=YYYY-MM-DD
+SENSEX_EXPIRY_DATE=YYYY-MM-DD
+MARKET_POLL_SECONDS=1
+ENABLE_LIVE_TRADING=false
+AGGRESSIVE_MODE=false
+```
+
+`NIFTY_EXPIRY_DATE` and `SENSEX_EXPIRY_DATE` must be the active weekly/monthly option expiries you want to trade. Upstox option-chain API requires an expiry date, so the backend will not invent one.
+
+### Upstox token flow
+
+1. Deploy backend on Render.
+2. Set the same redirect URL in the Upstox developer console:
+
+```text
+https://your-render-api.onrender.com/api/upstox/callback
+```
+
+3. Open:
+
+```text
+https://your-render-api.onrender.com/api/upstox/login-url
+```
+
+4. Open the returned `loginUrl`, log in to Upstox, and approve.
+5. Verify token:
+
+```text
+https://your-render-api.onrender.com/api/upstox/token/status
+```
+
+Expected:
+
+```json
+{"configured": true, "hasToken": true}
+```
+
+### Market phases
+
+The backend classifies Indian market time in IST:
+
+- `PRE_MARKET_ANALYSIS`: 08:30-09:15, analysis only, no live scalps.
+- `LIVE_MARKET`: 09:15-15:30, scalping can be considered if risk gates pass.
+- `POST_MARKET_ANALYSIS`: 15:30-16:15, review only.
+- `CLOSED_MARKET`: outside regular session or weekends, closed-market analysis from latest Upstox data only.
+
+### Real data used
+
+The terminal snapshot is built from:
+
+- Upstox V3 LTP quotes
+- Upstox V2 option chain, including market data and Greeks
+- Upstox V3 intraday candles
+- Upstox positions, orders, and funds where available
+- Derived analytics from real bid/ask quantity, OI, volume, spreads, candles, and previous real poll state
+
+REST snapshots cannot prove true exchange aggressor side like a colocated tick/order feed. Therefore orderflow metrics are labelled as Upstox-derived from real depth, LTP, volume and OI changes rather than fabricated institutional tape.
+
+### Analysis-only mode
+
+Default production mode is analysis only:
+
+```text
+ENABLE_LIVE_TRADING=false
+AGGRESSIVE_MODE=false
+```
+
+The system streams real market analysis but blocks order placement.
+
+### Aggressive scalping mode
+
+Only after you confirm broker permissions, exchange approvals, lot size, freeze quantity, capital limits, and risk settings, enable:
+
+```text
+ENABLE_LIVE_TRADING=true
+AGGRESSIVE_MODE=true
+```
+
+Live orders use:
+
+```http
+POST /api/execution/scalp-order
+```
+
+Example body:
+
+```json
+{
+  "instrument_token": "NSE_FO|12345",
+  "quantity": 75,
+  "transaction_type": "BUY",
+  "order_type": "LIMIT",
+  "price": 150.5,
+  "market_protection": 0,
+  "tag": "nexusquant-scalp"
+}
+```
+
+The backend blocks orders when:
+
+- `ENABLE_LIVE_TRADING=false`
+- market phase is not `LIVE_MARKET`
+- Upstox token is missing
+- risk gates fail
+- a MARKET order has no market protection
+
+Keep `ENABLE_LIVE_TRADING=false` until you have tested with small quantity and confirmed all Upstox responses in production.
+
 ## Production integration notes
 
 The Upstox adapter is intentionally isolated in `backend/app/services/upstox_client.py`. Replace the mock methods with MarketDataStreamerV3, option chain APIs, order APIs, funds APIs, and positions APIs once broker credentials and order permissions are available.

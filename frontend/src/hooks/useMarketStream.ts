@@ -1,60 +1,70 @@
-import { useEffect, useRef, useState } from 'react';
-import { createMockSnapshot } from '../data/mockMarket';
+import { useEffect, useState } from 'react';
 import type { StreamStatus, TerminalSnapshot } from '../types';
 
 const defaultWsUrl = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws/market';
 
+interface StreamIssue {
+  status: string;
+  message: string;
+}
+
 export function useMarketStream() {
-  const [snapshot, setSnapshot] = useState<TerminalSnapshot>(() => createMockSnapshot(1));
+  const [snapshot, setSnapshot] = useState<TerminalSnapshot | null>(null);
   const [status, setStatus] = useState<StreamStatus>('connecting');
-  const tickRef = useRef(1);
+  const [issue, setIssue] = useState<StreamIssue | null>(null);
 
   useEffect(() => {
     let closed = false;
-    let fallbackTimer: number | undefined;
-    let fallbackStarted = false;
     let socket: WebSocket | undefined;
-
-    const startFallback = () => {
-      if (fallbackStarted || closed) return;
-      fallbackStarted = true;
-      setStatus('fallback');
-      fallbackTimer = window.setInterval(() => {
-        tickRef.current += 1;
-        setSnapshot(createMockSnapshot(tickRef.current));
-      }, 1000);
-    };
-
-    const fallbackTimeout = window.setTimeout(startFallback, 1800);
 
     try {
       socket = new WebSocket(defaultWsUrl);
       socket.onopen = () => {
-        window.clearTimeout(fallbackTimeout);
+        if (closed) return;
         setStatus('live');
+        setIssue(null);
       };
       socket.onmessage = (event) => {
         try {
-          setSnapshot(JSON.parse(event.data) as TerminalSnapshot);
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'status') {
+            setStatus('status');
+            setIssue({ status: payload.status ?? 'STATUS', message: payload.message ?? 'Waiting for real Upstox data.' });
+            return;
+          }
+          if (payload.type === 'snapshot' || payload.tradeQualityScore !== undefined) {
+            setSnapshot(payload as TerminalSnapshot);
+            setStatus('live');
+            setIssue(null);
+          }
         } catch (error) {
-          console.warn('Invalid market snapshot received', error);
+          setStatus('error');
+          setIssue({ status: 'INVALID_STREAM_PAYLOAD', message: String(error) });
         }
       };
-      socket.onerror = startFallback;
-      socket.onclose = () => {
-        if (!closed) startFallback();
+      socket.onerror = () => {
+        if (closed) return;
+        setStatus('error');
+        setIssue({ status: 'BACKEND_WS_ERROR', message: 'Could not connect to backend WebSocket. Check VITE_WS_URL and Render service health.' });
       };
-    } catch {
-      startFallback();
+      socket.onclose = () => {
+        if (closed) return;
+        setStatus('error');
+        setIssue({ status: 'BACKEND_WS_CLOSED', message: 'Backend WebSocket closed. No local dummy market data will be shown.' });
+      };
+    } catch (error) {
+      window.setTimeout(() => {
+        if (closed) return;
+        setStatus('error');
+        setIssue({ status: 'BACKEND_WS_INIT_FAILED', message: String(error) });
+      }, 0);
     }
 
     return () => {
       closed = true;
-      window.clearTimeout(fallbackTimeout);
-      if (fallbackTimer) window.clearInterval(fallbackTimer);
       socket?.close();
     };
   }, []);
 
-  return { snapshot, status };
+  return { snapshot, status, issue };
 }
