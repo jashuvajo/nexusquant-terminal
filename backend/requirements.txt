@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+redis
+asyncpg
+prometheus-client
+xgboost
+numpy
+pandas
+python-dotenv
