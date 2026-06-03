@@ -165,6 +165,23 @@ class RealTimeMarketEngine:
             and selected_instrument
             and selected_ltp > 0
         )
+        trade_mode = "AUTO_EXECUTION_READY" if execution_allowed else "ANALYSIS_BACKTEST_ONLY"
+        backtest_metrics = self._backtest_metrics(candles_list, tqs, spread_quality)
+        suggested_trades = self._suggested_trades(
+            symbol=selected_symbol,
+            expiry=expiry,
+            side=selected_side,
+            strike=atm_strike,
+            instrument=selected_instrument,
+            premium=selected_ltp,
+            tqs=tqs,
+            spread_quality=spread_quality,
+            option_bias=option_bias,
+            market_profile=market_profile,
+            execution_allowed=execution_allowed,
+            trade_mode=trade_mode,
+            safe_mode=risk_decision.safe_mode,
+        )
 
         return {
             "type": "snapshot",
@@ -177,6 +194,7 @@ class RealTimeMarketEngine:
             "aggressiveMode": self.settings.aggressive_mode,
             "autoTradingStopped": auto_trading_stopped,
             "tradingControl": trading_control_status,
+            "tradeMode": trade_mode,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
             "upstoxConnection": {
@@ -192,6 +210,7 @@ class RealTimeMarketEngine:
             "expiryState": expiry_state,
             "premarketAnalysis": self._premarket_analysis(session.phase, market_profile, option_bias, spread_quality, tqs),
             "tomorrowTradePlan": self._tomorrow_trade_plan(selected_symbol, expiry, atm_strike, selected_side, selected_instrument, selected_ltp, tqs, market_profile, option_bias, risk_decision.safe_mode),
+            "suggestedTrades": suggested_trades,
             "symbol": selected_symbol,
             "spot": round(spot, 2),
             "atmStrike": atm_strike,
@@ -242,7 +261,7 @@ class RealTimeMarketEngine:
             },
             "telemetry": telemetry,
             "journal": [],
-            "backtest": [],
+            "backtest": backtest_metrics,
             "executionDecision": {
                 "allowNewTrade": execution_allowed,
                 "reason": "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
@@ -632,6 +651,154 @@ class RealTimeMarketEngine:
                 }
             )
         return trades
+
+    def _backtest_metrics(self, candles: list[dict[str, Any]], tqs: int, spread_quality: int) -> list[dict[str, Any]]:
+        if len(candles) < 3:
+            return [
+                {"name": "Backtest Data", "value": len(candles), "unit": " candles"},
+                {"name": "TQS", "value": tqs, "unit": ""},
+                {"name": "Spread Quality", "value": spread_quality, "unit": "%"},
+            ]
+        closes = [as_float(candle.get("close")) for candle in candles if as_float(candle.get("close")) > 0]
+        volumes = [as_int(candle.get("volume")) for candle in candles]
+        if len(closes) < 2:
+            return [{"name": "Backtest Data", "value": len(candles), "unit": " candles"}]
+        returns = [((closes[index] - closes[index - 1]) / closes[index - 1]) * 100 for index in range(1, len(closes)) if closes[index - 1] > 0]
+        wins = [value for value in returns if value > 0]
+        losses = [abs(value) for value in returns if value < 0]
+        win_rate = round((len(wins) / len(returns)) * 100, 2) if returns else 0
+        profit_factor = round((sum(wins) / sum(losses)), 2) if sum(losses) > 0 else round(sum(wins), 2)
+        session_move = round(((closes[-1] - closes[0]) / closes[0]) * 100, 3) if closes[0] else 0
+        avg_volume = round(mean(volumes), 2) if volumes else 0
+        return [
+            {"name": "Candle Sample", "value": len(closes), "unit": " real"},
+            {"name": "Win Rate", "value": win_rate, "unit": "%"},
+            {"name": "Profit Factor", "value": profit_factor, "unit": "x"},
+            {"name": "Session Move", "value": session_move, "unit": "%"},
+            {"name": "Avg Volume", "value": avg_volume, "unit": ""},
+            {"name": "TQS", "value": tqs, "unit": ""},
+        ]
+
+    def _suggested_trades(
+        self,
+        *,
+        symbol: str,
+        expiry: str,
+        side: str,
+        strike: int,
+        instrument: str | None,
+        premium: float,
+        tqs: int,
+        spread_quality: int,
+        option_bias: dict[str, Any],
+        market_profile: dict[str, Any],
+        execution_allowed: bool,
+        trade_mode: str,
+        safe_mode: bool,
+    ) -> list[dict[str, Any]]:
+        action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
+        confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
+        return [
+            {
+                "id": f"{symbol}-{expiry}-{strike}-{side}",
+                "mode": trade_mode,
+                "action": action,
+                "symbol": symbol,
+                "side": side,
+                "strike": strike,
+                "expiry": expiry,
+                "instrumentKey": instrument,
+                "lastPremium": premium,
+                "tqs": tqs,
+                "confidence": confidence,
+                "bias": option_bias.get("direction"),
+                "pcr": option_bias.get("pcr"),
+                "safeMode": safe_mode,
+                "entryRules": [
+                    "Use as analysis/backtest suggestion only while ENABLE_LIVE_TRADING=false" if not execution_allowed else "Eligible for execution route; confirm quantity and risk before order",
+                    "Require live spread quality to remain above threshold",
+                    "Confirm spot acceptance around VAH/VAL before entry",
+                    "Avoid trade if Upstox funds or option chain become unavailable",
+                ],
+                "levels": {
+                    "poc": market_profile.get("poc"),
+                    "vah": market_profile.get("vah"),
+                    "val": market_profile.get("val"),
+                },
+                "invalidations": [
+                    "TQS drops below threshold",
+                    "Spread widens or liquidity disappears",
+                    "Bias flips in option chain/OI",
+                    "Manual STOP is active",
+                ],
+            }
+        ]
+
+    def _premarket_analysis(self, phase: MarketPhase, profile: dict[str, Any], bias: dict[str, Any], spread_quality: int, tqs: int) -> dict[str, Any]:
+        readiness = "WAIT_FOR_MARKET_OPEN" if phase == MarketPhase.PRE_MARKET_ANALYSIS else "CLOSED_MARKET_REVIEW" if phase != MarketPhase.LIVE_MARKET else "LIVE_MONITORING"
+        return {
+            "readiness": readiness,
+            "bias": bias.get("direction"),
+            "pcr": bias.get("pcr"),
+            "keyLevels": {
+                "poc": profile.get("poc"),
+                "vah": profile.get("vah"),
+                "val": profile.get("val"),
+            },
+            "checklist": [
+                "Confirm first 5-minute candle direction after 09:15 IST",
+                "Trade only if spread quality stays above threshold",
+                "Confirm option-chain OI bias and ATM liquidity before entry",
+                "Avoid live orders until ENABLE_LIVE_TRADING is intentionally enabled",
+            ],
+            "score": tqs,
+            "spreadQuality": spread_quality,
+        }
+
+    def _tomorrow_trade_plan(
+        self,
+        symbol: str,
+        expiry: str,
+        atm_strike: int,
+        side: str,
+        instrument: str | None,
+        ltp: float,
+        tqs: int,
+        profile: dict[str, Any],
+        bias: dict[str, Any],
+        safe_mode: bool,
+    ) -> dict[str, Any]:
+        return {
+            "generatedFor": "next_trading_session",
+            "symbol": symbol,
+            "expiry": expiry,
+            "primaryBias": bias.get("direction"),
+            "candidate": {
+                "side": side,
+                "strike": atm_strike,
+                "instrumentKey": instrument,
+                "lastPremium": ltp,
+            },
+            "entryRules": [
+                f"Prefer {side} scalp only if spot accepts above VAH" if side == "CALL" else f"Prefer {side} scalp only if spot rejects below VAL",
+                "Require TQS above configured threshold after live market opens",
+                "Require tight bid/ask spread and fresh volume expansion",
+                "Do not place pre-market F&O orders from this terminal",
+            ],
+            "invalidations": [
+                "Spread quality deteriorates",
+                "Option-chain bias flips after open",
+                "First 5-minute breakout fails and returns inside value area",
+                "Risk engine enters SAFE MODE",
+            ],
+            "levels": {
+                "poc": profile.get("poc"),
+                "vah": profile.get("vah"),
+                "val": profile.get("val"),
+            },
+            "tqs": tqs,
+            "safeMode": safe_mode,
+        }
 
     def _stale_data_ms(self, ltp_quote: dict[str, Any]) -> int:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)

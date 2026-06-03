@@ -185,6 +185,26 @@ export interface BacktestMetric {
   unit: string;
 }
 
+export interface SuggestedTrade {
+  id: string;
+  mode: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
+  action: 'SUGGEST_ONLY' | 'EXECUTION_READY' | string;
+  symbol: MarketSymbol;
+  side: 'CALL' | 'PUT';
+  strike: number;
+  expiry: string;
+  instrumentKey?: string;
+  lastPremium: number;
+  tqs: number;
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH' | string;
+  bias: string;
+  pcr: number;
+  safeMode: boolean;
+  entryRules: string[];
+  invalidations: string[];
+  levels: { poc: number; vah: number; val: number };
+}
+
 export interface TerminalSnapshot {
   type?: 'snapshot';
   timestamp: string;
@@ -196,12 +216,14 @@ export interface TerminalSnapshot {
   aggressiveMode?: boolean;
   autoTradingStopped?: boolean;
   tradingControl?: { autoTradingStopped: boolean; reason?: string; updatedAt?: string };
+  tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
   dataSource?: string;
   dataWarnings?: string[];
   upstoxConnection?: UpstoxConnectionState;
   expiryState?: ExpiryState;
   premarketAnalysis?: PremarketAnalysis;
   tomorrowTradePlan?: TomorrowTradePlan;
+  suggestedTrades?: SuggestedTrade[];
   symbol: MarketSymbol;
   spot: number;
   atmStrike: number;

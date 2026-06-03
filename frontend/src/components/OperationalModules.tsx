@@ -7,8 +7,9 @@ import { formatCurrency, formatNumber } from '../utils/format';
 
 export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
   return (
-    <Card title="Adaptive Strategy Router" eyebrow="Smart execution route selection">
-      <div className="grid gap-4 md:grid-cols-3">
+    <Card title="Adaptive Strategy Router" eyebrow="Backtest suggestions when auto trading is off; execution-ready only when risk gates pass">
+      <div className="grid gap-4 md:grid-cols-4">
+        <MetricCard label="Trade Mode" value={(snapshot.tradeMode ?? 'ANALYSIS_BACKTEST_ONLY').replaceAll('_', ' ')} helper={snapshot.liveTradingEnabled ? 'Auto trading variable enabled' : 'Auto trading off: suggest only'} tone={snapshot.executionAllowed ? 'emerald' : 'amber'} />
         <MetricCard label="Selected Strategy" value={snapshot.strategy.selected} helper="Regime-aware scalp model" tone="cyan" />
         <MetricCard label="Aggression" value={`${snapshot.strategy.aggression}%`} helper={snapshot.strategy.router.replaceAll('_', ' ')} tone="amber" />
         <MetricCard label="Size Multiplier" value={`${snapshot.strategy.sizeMultiplier}x`} helper={`TQS threshold ${snapshot.strategy.threshold}`} tone="emerald" />
@@ -19,6 +20,30 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
         <ScoreBar label="Spread Quality" value={snapshot.spreadQuality} />
         <ScoreBar label="Option Chain Bias" value={snapshot.aiMatrix.find((item) => item.engine === 'Option Chain Bias')?.score ?? 0} />
       </div>
+      {snapshot.suggestedTrades && snapshot.suggestedTrades.length > 0 && (
+        <div className="mt-5 space-y-3">
+          {snapshot.suggestedTrades.map((trade) => (
+            <div key={trade.id} className="rounded-2xl border border-cyan-300/20 bg-slate-950/60 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold text-white">{trade.symbol} {trade.strike} {trade.side} | {trade.expiry}</p>
+                  <p className="text-xs text-slate-400">{trade.instrumentKey ?? 'Instrument unavailable'} | Last premium {trade.lastPremium}</p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${trade.action === 'EXECUTION_READY' ? 'bg-emerald-300/10 text-emerald-200' : 'bg-amber-300/10 text-amber-200'}`}>{trade.action.replaceAll('_', ' ')}</span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-4">
+                <div>TQS <span className="font-mono text-white">{trade.tqs}</span></div>
+                <div>Confidence <span className="font-mono text-white">{trade.confidence}</span></div>
+                <div>Bias <span className="font-mono text-white">{trade.bias}</span></div>
+                <div>PCR <span className="font-mono text-white">{trade.pcr}</span></div>
+              </div>
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-400">
+                {trade.entryRules.map((rule) => <li key={rule}>{rule}</li>)}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
@@ -223,12 +248,21 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
 
 export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
   return (
-    <Card title="Backtesting" eyebrow="Institutional scalp model validation">
+    <Card title="Backtesting" eyebrow="Real Upstox candle replay when auto trading is off">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {snapshot.backtest.map((metric) => (
-          <MetricCard key={metric.name} label={metric.name} value={`${formatNumber(metric.value)}${metric.unit}`} helper="Rolling research metric" tone="cyan" />
+          <MetricCard key={metric.name} label={metric.name} value={`${formatNumber(metric.value)}${metric.unit}`} helper="Computed from real Upstox candles" tone="cyan" />
         ))}
       </div>
+      {snapshot.suggestedTrades && snapshot.suggestedTrades.length > 0 && (
+        <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+          <p className="font-bold uppercase tracking-[0.2em]">Suggestion mode</p>
+          <p className="mt-2">
+            Auto trading is {snapshot.liveTradingEnabled ? 'enabled' : 'off'}; current snapshot mode is {(snapshot.tradeMode ?? 'ANALYSIS_BACKTEST_ONLY').replaceAll('_', ' ')}.
+            Suggestions are derived from Upstox LTP, option chain, Greeks and candles. Orders remain blocked unless execution is explicitly allowed.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

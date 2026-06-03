@@ -389,3 +389,35 @@ Use these checks after deployment:
 /api/market/expiries/NIFTY
 /api/market/snapshot/NIFTY
 ```
+
+
+## Auto-off backtest and suggestion mode
+
+When auto trading is off:
+
+```text
+ENABLE_LIVE_TRADING=false
+```
+
+NexusQuant does not place orders. It uses real Upstox data to:
+
+- backtest recent intraday candles
+- score the current option-chain setup
+- generate suggested trades for tomorrow/pre-market planning
+- show entry rules and invalidation rules
+
+When auto trading is on:
+
+```text
+ENABLE_LIVE_TRADING=true
+```
+
+The same signal can become `AUTO_EXECUTION_READY` only if all gates pass:
+
+- Indian market session is live
+- Upstox token and market data are valid
+- dynamic expiry and option-chain data are available
+- TQS/risk/spread gates pass
+- manual STOP is not active
+
+The STOP button always overrides auto trading.
