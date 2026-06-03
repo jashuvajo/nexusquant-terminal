@@ -80,11 +80,16 @@ async def terminal_state(settings: Settings = Depends(get_settings)) -> dict[str
 
 
 @router.get("/deployment/status")
-async def deployment_status(settings: Settings = Depends(get_settings), auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+async def deployment_status(
+    settings: Settings = Depends(get_settings),
+    auth_service: UpstoxAuthService = Depends(get_upstox_auth),
+    engine: RealTimeMarketEngine = Depends(get_market_engine),
+) -> dict:
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.4.0-upstox-only",
+        "apiVersion": "0.5.0-runtime-validated",
+        "runtimeValidation": engine.validate_runtime(),
         "environment": settings.environment,
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         "railwayService": os.getenv("RAILWAY_SERVICE_NAME"),
@@ -275,8 +280,12 @@ async def upstox_token_status_alias(auth_service: UpstoxAuthService = Depends(ge
 
 
 @alias_router.get("/deployment/status")
-async def deployment_status_alias(settings: Settings = Depends(get_settings), auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
-    return await deployment_status(settings, auth_service)
+async def deployment_status_alias(
+    settings: Settings = Depends(get_settings),
+    auth_service: UpstoxAuthService = Depends(get_upstox_auth),
+    engine: RealTimeMarketEngine = Depends(get_market_engine),
+) -> dict:
+    return await deployment_status(settings, auth_service, engine)
 
 
 @alias_router.get("/execution/status")

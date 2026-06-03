@@ -57,6 +57,12 @@ class PreviousTick:
 class RealTimeMarketEngine:
     """Builds terminal snapshots only from real Upstox responses."""
 
+    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan")
+
+    def validate_runtime(self) -> dict[str, Any]:
+        missing = [name for name in self.REQUIRED_HELPERS if not hasattr(self, name)]
+        return {"ok": not missing, "missingHelpers": missing}
+
     def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine, trading_control: TradingControl | None = None) -> None:
         self.settings = settings
         self.client = client
