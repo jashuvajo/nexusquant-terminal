@@ -162,6 +162,8 @@ class RealTimeMarketEngine:
         self.previous[selected_symbol] = current
 
         trading_control_status = await self.trading_control.status()
+        capital_status = await self.trading_control.capital_status()
+        trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
         execution_allowed = bool(
             self.settings.enable_live_trading
@@ -187,6 +189,7 @@ class RealTimeMarketEngine:
             execution_allowed=execution_allowed,
             trade_mode=trade_mode,
             safe_mode=risk_decision.safe_mode,
+            trading_capital=float(trading_capital or 0),
         )
 
         return {
@@ -200,6 +203,7 @@ class RealTimeMarketEngine:
             "aggressiveMode": self.settings.aggressive_mode,
             "autoTradingStopped": auto_trading_stopped,
             "tradingControl": trading_control_status,
+            "tradingCapital": {**capital_status, "tradingCapital": float(trading_capital or 0)},
             "tradeMode": trade_mode,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
@@ -701,9 +705,12 @@ class RealTimeMarketEngine:
         execution_allowed: bool,
         trade_mode: str,
         safe_mode: bool,
+        trading_capital: float,
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
+        quantity_estimate = int(trading_capital // premium) if premium > 0 and trading_capital > 0 else 0
+        allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
         return [
             {
                 "id": f"{symbol}-{expiry}-{strike}-{side}",
@@ -715,6 +722,9 @@ class RealTimeMarketEngine:
                 "expiry": expiry,
                 "instrumentKey": instrument,
                 "lastPremium": premium,
+                "tradingCapital": trading_capital,
+                "quantityEstimate": quantity_estimate,
+                "allocationPct": allocation_pct,
                 "tqs": tqs,
                 "confidence": confidence,
                 "bias": option_bias.get("direction"),

@@ -1,9 +1,68 @@
+import { useState } from 'react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Card } from './Card';
 import { MetricCard } from './MetricCard';
 import { ScoreBar } from './ScoreBar';
 import type { TerminalSnapshot } from '../types';
 import { formatCurrency, formatNumber } from '../utils/format';
+
+
+function TradingCapitalControl({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+  const currentCapital = snapshot.tradingCapital?.tradingCapital ?? 0;
+  const [amount, setAmount] = useState(currentCapital ? String(currentCapital) : '');
+  const [message, setMessage] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const saveCapital = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/capital`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: Number(amount || 0), reason: 'Capital set from Strategy Router' }),
+      });
+      if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+      const payload = await response.json();
+      setMessage(`Capital saved: ${formatCurrency(payload.tradingCapital ?? 0)}`);
+    } catch (error) {
+      setMessage(`Capital save failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/10 p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.24em] text-violet-200">Trading capital for live/backtest</p>
+          <p className="mt-1 text-sm text-slate-400">Used for quantity estimate, backtesting context, and live order capital guard.</p>
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            inputMode="decimal"
+            placeholder="Capital INR"
+            className="w-40 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-violet-300"
+          />
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void saveCapital()}
+            className="rounded-xl border border-violet-300/30 bg-violet-400/15 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-violet-100 disabled:opacity-50"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-slate-300">Current backend capital: {formatCurrency(currentCapital)}</p>
+      {message && <p className="mt-2 text-xs text-slate-300">{message}</p>}
+    </div>
+  );
+}
 
 export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
   return (
@@ -14,6 +73,7 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
         <MetricCard label="Aggression" value={`${snapshot.strategy.aggression}%`} helper={snapshot.strategy.router.replaceAll('_', ' ')} tone="amber" />
         <MetricCard label="Size Multiplier" value={`${snapshot.strategy.sizeMultiplier}x`} helper={`TQS threshold ${snapshot.strategy.threshold}`} tone="emerald" />
       </div>
+      <TradingCapitalControl snapshot={snapshot} />
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <ScoreBar label="Momentum Expansion" value={snapshot.orderflow.breakoutVelocity} />
         <ScoreBar label="Liquidity Confirmation" value={snapshot.orderflow.liquidityShift} />
@@ -36,6 +96,8 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
                 <div>Confidence <span className="font-mono text-white">{trade.confidence}</span></div>
                 <div>Bias <span className="font-mono text-white">{trade.bias}</span></div>
                 <div>PCR <span className="font-mono text-white">{trade.pcr}</span></div>
+                <div>Qty Estimate <span className="font-mono text-white">{trade.quantityEstimate ?? 0}</span></div>
+                <div>Allocation <span className="font-mono text-white">{trade.allocationPct ?? 0}%</span></div>
               </div>
               <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-400">
                 {trade.entryRules.map((rule) => <li key={rule}>{rule}</li>)}

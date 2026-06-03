@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     safe_mode_threshold: int = 86
     max_exposure_pct: int = 42
     daily_drawdown_pct: float = 3.0
+    trading_capital_default: float = 0.0
     market_poll_seconds: float = 1.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

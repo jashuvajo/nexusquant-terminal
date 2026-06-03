@@ -34,6 +34,11 @@ class TradingControlRequest(BaseModel):
     reason: str = "Manual operator action"
 
 
+class TradingCapitalRequest(BaseModel):
+    amount: float = Field(..., ge=0)
+    reason: str = "Capital updated from NexusQuant terminal"
+
+
 def get_upstox_auth(settings: Settings = Depends(get_settings)) -> UpstoxAuthService:
     return UpstoxAuthService(
         api_key=settings.upstox_api_key,
@@ -188,11 +193,26 @@ async def option_chain(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = 
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.get("/capital")
+async def capital_status(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
+    status = await control.capital_status()
+    if status["tradingCapital"] <= 0 and settings.trading_capital_default > 0:
+        return {**status, "tradingCapital": settings.trading_capital_default, "source": "TRADING_CAPITAL_DEFAULT"}
+    return {**status, "source": "runtime"}
+
+
+@router.post("/capital")
+async def set_capital(request: TradingCapitalRequest, control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await control.set_capital(request.amount, request.reason)
+
+
 @router.get("/execution/status")
 async def execution_status(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
     status = await control.status()
+    capital = await control.capital_status()
     return {
         **status,
+        "capital": capital,
         "liveTradingEnabled": settings.enable_live_trading,
         "aggressiveMode": settings.aggressive_mode,
     }
@@ -247,6 +267,11 @@ async def place_scalp_order(
         raise HTTPException(status_code=403, detail=f"Execution blocked: {session.label}. {session.reason}")
     if request.order_type == "MARKET" and request.market_protection <= 0:
         raise HTTPException(status_code=400, detail="Aggressive MARKET orders require market_protection > 0.")
+    capital_status_value = await control.capital_status()
+    trading_capital = capital_status_value.get("tradingCapital") or settings.trading_capital_default
+    estimated_value = request.quantity * request.price if request.price > 0 else 0
+    if trading_capital and estimated_value and estimated_value > trading_capital:
+        raise HTTPException(status_code=403, detail=f"Order value {estimated_value} exceeds configured trading capital {trading_capital}.")
 
     order = {
         "quantity": request.quantity,
@@ -321,3 +346,8 @@ async def execution_stop_now_alias(control: TradingControl = Depends(get_trading
 @alias_router.get("/execution/resume-now")
 async def execution_resume_now_alias(control: TradingControl = Depends(get_trading_control)) -> dict:
     return await resume_execution_now(control)
+
+
+@alias_router.get("/capital")
+async def capital_status_alias(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
+    return await capital_status(control, settings)

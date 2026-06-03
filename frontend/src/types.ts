@@ -195,6 +195,9 @@ export interface SuggestedTrade {
   expiry: string;
   instrumentKey?: string;
   lastPremium: number;
+  tradingCapital?: number;
+  quantityEstimate?: number;
+  allocationPct?: number;
   tqs: number;
   confidence: 'LOW' | 'MEDIUM' | 'HIGH' | string;
   bias: string;
@@ -216,6 +219,7 @@ export interface TerminalSnapshot {
   aggressiveMode?: boolean;
   autoTradingStopped?: boolean;
   tradingControl?: { autoTradingStopped: boolean; reason?: string; updatedAt?: string };
+  tradingCapital?: { tradingCapital: number; reason?: string; updatedAt?: string };
   tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
   dataSource?: string;
   dataWarnings?: string[];

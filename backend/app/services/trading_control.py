@@ -10,6 +10,8 @@ except Exception:  # pragma: no cover
 
 STOP_KEY = "nexusquant:trading:stopped"
 STOP_META_KEY = "nexusquant:trading:stop_meta"
+CAPITAL_KEY = "nexusquant:trading:capital"
+CAPITAL_META_KEY = "nexusquant:trading:capital_meta"
 
 
 class TradingControl:
@@ -56,6 +58,53 @@ class TradingControl:
             except Exception:
                 pass
         return await self.status()
+
+
+    async def set_capital(self, amount: float, reason: str = "Capital updated") -> dict[str, Any]:
+        amount = max(0.0, float(amount))
+        meta = {
+            "amount": str(amount),
+            "reason": reason,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        TradingControl._memory_meta = {**TradingControl._memory_meta, "capital": amount, "capitalUpdatedAt": meta["updatedAt"]}
+        if redis is not None:
+            try:
+                client = redis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+                await client.set(CAPITAL_KEY, str(amount))
+                await client.hset(CAPITAL_META_KEY, mapping=meta)
+                await client.aclose()
+            except Exception:
+                pass
+        return await self.capital_status()
+
+    async def get_capital(self) -> float:
+        if redis is not None:
+            try:
+                client = redis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+                value = await client.get(CAPITAL_KEY)
+                await client.aclose()
+                if value is not None:
+                    return max(0.0, float(value))
+            except Exception:
+                pass
+        return float(TradingControl._memory_meta.get("capital") or 0.0)
+
+    async def capital_status(self) -> dict[str, Any]:
+        amount = await self.get_capital()
+        meta: dict[str, Any] = {}
+        if redis is not None:
+            try:
+                client = redis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+                meta = await client.hgetall(CAPITAL_META_KEY)
+                await client.aclose()
+            except Exception:
+                pass
+        return {
+            "tradingCapital": amount,
+            "reason": meta.get("reason") or "Runtime capital",
+            "updatedAt": meta.get("updatedAt") or TradingControl._memory_meta.get("capitalUpdatedAt"),
+        }
 
     async def is_stopped(self) -> bool:
         if redis is not None:
