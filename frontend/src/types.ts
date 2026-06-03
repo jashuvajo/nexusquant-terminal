@@ -189,6 +189,8 @@ export interface TerminalSnapshot {
   executionAllowed?: boolean;
   liveTradingEnabled?: boolean;
   aggressiveMode?: boolean;
+  autoTradingStopped?: boolean;
+  tradingControl?: { autoTradingStopped: boolean; reason?: string; updatedAt?: string };
   dataSource?: string;
   dataWarnings?: string[];
   upstoxConnection?: UpstoxConnectionState;

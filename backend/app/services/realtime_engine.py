@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.risk_engine import RiskEngine
 from app.services.session import IST, MarketPhase, current_session_state
+from app.services.trading_control import TradingControl
 from app.services.upstox_client import UpstoxClient, UpstoxDataError
 
 
@@ -56,11 +57,12 @@ class PreviousTick:
 class RealTimeMarketEngine:
     """Builds terminal snapshots only from real Upstox responses."""
 
-    def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine) -> None:
+    def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine, trading_control: TradingControl | None = None) -> None:
         self.settings = settings
         self.client = client
         self.scorer = scorer
         self.risk_engine = risk_engine
+        self.trading_control = trading_control or TradingControl(settings.redis_url)
         self.previous: dict[str, PreviousTick] = {}
 
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
@@ -153,8 +155,11 @@ class RealTimeMarketEngine:
         current = PreviousTick(spot=spot, selected_ltp=selected_ltp, selected_volume=as_int(selected_md.get("volume")), timestamp=datetime.now(timezone.utc))
         self.previous[selected_symbol] = current
 
+        trading_control_status = await self.trading_control.status()
+        auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
         execution_allowed = bool(
             self.settings.enable_live_trading
+            and not auto_trading_stopped
             and session.execution_allowed
             and risk_decision.allow_new_trade
             and selected_instrument
@@ -170,6 +175,8 @@ class RealTimeMarketEngine:
             "executionAllowed": execution_allowed,
             "liveTradingEnabled": self.settings.enable_live_trading,
             "aggressiveMode": self.settings.aggressive_mode,
+            "autoTradingStopped": auto_trading_stopped,
+            "tradingControl": trading_control_status,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
             "upstoxConnection": {
@@ -194,7 +201,7 @@ class RealTimeMarketEngine:
             "spreadQuality": spread_quality,
             "executionLatencyMs": 0,
             "deltaVelocity": orderflow["deltaVelocity"],
-            "trailingStopState": "Execution disabled" if not self.settings.enable_live_trading else "Risk gated" if not execution_allowed else "Aggressive scalp armed",
+            "trailingStopState": "Manual STOP active" if auto_trading_stopped else "Execution disabled" if not self.settings.enable_live_trading else "Risk gated" if not execution_allowed else "Aggressive scalp armed",
             "regime": regime,
             "volatilityRegime": "IV_EXPANSION" if greeks["ivExpansion"] >= 65 else "NORMAL_IV",
             "activeTrades": self._active_trades(selected_symbol, positions, data_warnings),
@@ -236,7 +243,7 @@ class RealTimeMarketEngine:
             "backtest": [],
             "executionDecision": {
                 "allowNewTrade": execution_allowed,
-                "reason": "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
+                "reason": "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
                 "candidateInstrument": selected_instrument,
                 "candidateSide": selected_side,
                 "candidateLtp": selected_ltp,

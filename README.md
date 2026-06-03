@@ -326,3 +326,34 @@ The execution pipeline is represented as:
 9. AI learning and analytics storage
 
 This scaffold does not place live orders by default. Keep execution disabled until broker credentials, exchange approvals, audit logging, and risk limits are validated.
+
+
+## Upstox token options
+
+Upstox authorization codes cannot be generated from environment variables. Upstox requires browser login and approval to create an authorization code.
+
+Recommended flow:
+
+```text
+/api/upstox/login-url -> Upstox login -> /api/upstox/callback -> token stored in Redis
+```
+
+Optional temporary override:
+
+```text
+UPSTOX_ACCESS_TOKEN=your_valid_access_token
+```
+
+Use this only if you already have a valid Upstox access token. When Upstox expires it, repeat login or replace the variable.
+
+## Auto-trading stop controls
+
+The backend includes a Redis-backed kill switch:
+
+```text
+GET  /api/execution/status
+POST /api/execution/stop
+POST /api/execution/resume
+```
+
+The frontend header has **Stop Auto** and **Resume** buttons. Live order placement is blocked whenever `autoTradingStopped=true`, even if `ENABLE_LIVE_TRADING=true`.

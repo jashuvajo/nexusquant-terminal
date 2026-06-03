@@ -35,11 +35,13 @@ class UpstoxAuthService:
         api_secret: str | None,
         redirect_uri: str | None,
         redis_url: str,
+        access_token: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
         self.redirect_uri = redirect_uri
         self.redis_url = redis_url
+        self.access_token = access_token
 
     @property
     def configured(self) -> bool:
@@ -110,7 +112,7 @@ class UpstoxAuthService:
                     return token
             except Exception:
                 pass
-        return UpstoxAuthService._memory_token
+        return UpstoxAuthService._memory_token or self.access_token
 
     async def token_status(self) -> dict[str, Any]:
         token = await self.get_token()
@@ -128,6 +130,7 @@ class UpstoxAuthService:
         return {
             "configured": self.configured,
             "hasToken": bool(token),
+            "source": "environment" if self.access_token and token == self.access_token else "redis" if token else None,
             "expiresAt": meta.get("expiresAt"),
             "tokenType": meta.get("tokenType"),
         }

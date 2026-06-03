@@ -95,6 +95,8 @@ REDIS_URL=${{Redis.REDIS_URL}}
 UPSTOX_API_KEY=your_upstox_api_key
 UPSTOX_API_SECRET=your_upstox_api_secret
 UPSTOX_REDIRECT_URI=https://${{RAILWAY_PUBLIC_DOMAIN}}/api/upstox/callback
+# Optional temporary token override. Leave blank unless you manually paste a valid Upstox access token.
+UPSTOX_ACCESS_TOKEN=
 PRIMARY_SYMBOL=NIFTY
 NIFTY_INSTRUMENT_KEY=NSE_INDEX|Nifty 50
 SENSEX_INSTRUMENT_KEY=BSE_INDEX|SENSEX
@@ -386,3 +388,34 @@ expiryState.selectedExpiry
 ```
 
 If you see `NON_UPSTOX_SNAPSHOT_BLOCKED`, Railway is probably running an old backend commit or a non-Upstox response. Redeploy Railway and Vercel using the latest commit.
+
+
+## Upstox token options
+
+Upstox authorization codes cannot be generated from environment variables. Upstox requires browser login and approval to create an authorization code.
+
+Recommended flow:
+
+```text
+/api/upstox/login-url -> Upstox login -> /api/upstox/callback -> token stored in Redis
+```
+
+Optional temporary override:
+
+```text
+UPSTOX_ACCESS_TOKEN=your_valid_access_token
+```
+
+Use this only if you already have a valid Upstox access token. When Upstox expires it, repeat login or replace the variable.
+
+## Auto-trading stop controls
+
+The backend includes a Redis-backed kill switch:
+
+```text
+GET  /api/execution/status
+POST /api/execution/stop
+POST /api/execution/resume
+```
+
+The frontend header has **Stop Auto** and **Resume** buttons. Live order placement is blocked whenever `autoTradingStopped=true`, even if `ENABLE_LIVE_TRADING=true`.

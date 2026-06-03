@@ -14,6 +14,7 @@ from app.services.ai_engine import TradeQualityScorer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.storage import AnalyticsStorage
+from app.services.trading_control import TradingControl
 from app.services.upstox_auth import UpstoxAuthService
 from app.services.upstox_client import UpstoxAuthRequired, UpstoxClient, UpstoxDataError
 
@@ -25,9 +26,11 @@ auth_service = UpstoxAuthService(
     api_secret=settings.upstox_api_secret,
     redirect_uri=settings.upstox_redirect_uri,
     redis_url=settings.redis_url,
+    access_token=settings.upstox_access_token,
 )
 upstox_client = UpstoxClient(settings.upstox_api_key, settings.upstox_api_secret, auth_service)
-market_engine = RealTimeMarketEngine(settings, upstox_client, scorer, risk_engine)
+trading_control = TradingControl(settings.redis_url)
+market_engine = RealTimeMarketEngine(settings, upstox_client, scorer, risk_engine, trading_control)
 storage = AnalyticsStorage(settings.database_url, settings.redis_url)
 
 SNAPSHOTS_STREAMED = Counter("nexusquant_snapshots_streamed_total", "Real Upstox market snapshots streamed to clients")

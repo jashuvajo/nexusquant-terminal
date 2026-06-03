@@ -12,6 +12,7 @@ from app.services.ai_engine import TradeQualityScorer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.session import current_session_state
+from app.services.trading_control import TradingControl
 from app.services.upstox_auth import UpstoxAuthError, UpstoxAuthService
 from app.services.upstox_client import UpstoxAuthRequired, UpstoxClient, UpstoxDataError
 
@@ -27,6 +28,10 @@ class ScalpOrderRequest(BaseModel):
     price: float = Field(..., ge=0)
     market_protection: int = Field(0, ge=0, le=100)
     tag: str = "nexusquant-scalp"
+
+
+class TradingControlRequest(BaseModel):
+    reason: str = "Manual operator action"
 
 
 def get_upstox_auth(settings: Settings = Depends(get_settings)) -> UpstoxAuthService:
@@ -45,13 +50,18 @@ def get_upstox(
     return UpstoxClient(settings.upstox_api_key, settings.upstox_api_secret, auth_service)
 
 
+def get_trading_control(settings: Settings = Depends(get_settings)) -> TradingControl:
+    return TradingControl(settings.redis_url)
+
+
 def get_market_engine(
     settings: Settings = Depends(get_settings),
     client: UpstoxClient = Depends(get_upstox),
+    trading_control: TradingControl = Depends(get_trading_control),
 ) -> RealTimeMarketEngine:
     scorer = TradeQualityScorer()
     risk_engine = RiskEngine(settings.ai_score_threshold, settings.safe_mode_threshold, settings.max_exposure_pct)
-    return RealTimeMarketEngine(settings, client, scorer, risk_engine)
+    return RealTimeMarketEngine(settings, client, scorer, risk_engine, trading_control)
 
 
 @router.get("/terminal/state")
@@ -80,6 +90,7 @@ async def deployment_status(settings: Settings = Depends(get_settings), auth_ser
         "railwayService": os.getenv("RAILWAY_SERVICE_NAME"),
         "upstoxConfigured": token_status["configured"],
         "upstoxTokenPresent": token_status["hasToken"],
+        "upstoxTokenSource": token_status.get("source"),
         "routes": [
             "/health",
             "/api/upstox/login-url",
@@ -172,13 +183,39 @@ async def option_chain(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = 
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.get("/execution/status")
+async def execution_status(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
+    status = await control.status()
+    return {
+        **status,
+        "liveTradingEnabled": settings.enable_live_trading,
+        "aggressiveMode": settings.aggressive_mode,
+    }
+
+
+@router.post("/execution/stop")
+async def stop_execution(request: TradingControlRequest | None = None, control: TradingControl = Depends(get_trading_control)) -> dict:
+    reason = request.reason if request else "Manual emergency stop"
+    return await control.stop(reason)
+
+
+@router.post("/execution/resume")
+async def resume_execution(request: TradingControlRequest | None = None, control: TradingControl = Depends(get_trading_control)) -> dict:
+    reason = request.reason if request else "Manual resume"
+    return await control.resume(reason)
+
+
 @router.post("/execution/scalp-order")
 async def place_scalp_order(
     request: ScalpOrderRequest,
     settings: Settings = Depends(get_settings),
     client: UpstoxClient = Depends(get_upstox),
+    control: TradingControl = Depends(get_trading_control),
 ) -> dict:
     session = current_session_state()
+    control_status = await control.status()
+    if control_status.get("autoTradingStopped"):
+        raise HTTPException(status_code=423, detail=f"Auto trading stopped: {control_status.get('reason') or 'manual stop'}")
     if not settings.enable_live_trading:
         raise HTTPException(status_code=403, detail="Live trading is disabled. Set ENABLE_LIVE_TRADING=true only after paper checks and risk approval.")
     if not session.execution_allowed:
@@ -240,3 +277,8 @@ async def upstox_token_status_alias(auth_service: UpstoxAuthService = Depends(ge
 @alias_router.get("/deployment/status")
 async def deployment_status_alias(settings: Settings = Depends(get_settings), auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
     return await deployment_status(settings, auth_service)
+
+
+@alias_router.get("/execution/status")
+async def execution_status_alias(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
+    return await execution_status(control, settings)
