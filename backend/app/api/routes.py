@@ -102,6 +102,19 @@ async def upstox_token_status(auth_service: UpstoxAuthService = Depends(get_upst
     return await auth_service.token_status()
 
 
+@router.get("/upstox/account-summary")
+async def upstox_account_summary(client: UpstoxClient = Depends(get_upstox)) -> dict:
+    try:
+        return {
+            "health": await client.health(),
+            "funds": await client.funds(),
+            "positions": await client.positions(),
+            "orders": await client.orders(),
+        }
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.get("/upstox/health")
 async def upstox_health(client: UpstoxClient = Depends(get_upstox)) -> dict:
     return await client.health()
@@ -115,14 +128,21 @@ async def upstox_portfolio(client: UpstoxClient = Depends(get_upstox)) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.get("/upstox/option-chain/{symbol}")
-async def option_chain(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
-    expiry = settings.expiry_for(symbol)
-    if not expiry:
-        raise HTTPException(status_code=400, detail=f"{symbol}_EXPIRY_DATE is not configured.")
+@router.get("/market/expiries/{symbol}")
+async def market_expiries(symbol: Literal["NIFTY", "SENSEX"], engine: RealTimeMarketEngine = Depends(get_market_engine), settings: Settings = Depends(get_settings)) -> dict:
     try:
-        return await client.option_chain(settings.instrument_key_for(symbol), expiry)
-    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        return await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
+    except (UpstoxAuthRequired, UpstoxDataError, MarketConfigurationError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/upstox/option-chain/{symbol}")
+async def option_chain(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox), engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
+    try:
+        expiry_state = await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
+        payload = await client.option_chain(settings.instrument_key_for(symbol), expiry_state["selectedExpiry"])
+        return {"expiryState": expiry_state, **payload}
+    except (UpstoxAuthRequired, UpstoxDataError, MarketConfigurationError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

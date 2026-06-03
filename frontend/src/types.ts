@@ -92,11 +92,61 @@ export interface InfraState {
 export interface PortfolioState {
   capital: number;
   margin: number;
+  availableMargin?: number;
+  usedMargin?: number;
+  payinAmount?: number;
+  exposureMargin?: number;
+  fundsSource?: string;
+  fundsBreakdown?: Record<string, number>;
   realizedPnl: number;
   unrealizedPnl: number;
   executionQuality: number;
   positions: number;
   orders: number;
+}
+
+export interface ExpiryState {
+  symbol: MarketSymbol;
+  underlyingInstrumentKey: string;
+  selectedExpiry: string;
+  source: 'configured' | 'upstox_nearest' | string;
+  configuredExpiry?: string | null;
+  availableExpiries: string[];
+  availableExpiryCount: number;
+  selectedContractCount: number;
+  lastCheckedAt: string;
+}
+
+export interface UpstoxConnectionState {
+  connected: boolean;
+  dataSource: string;
+  fundsAvailable: number;
+  fundsUsed: number;
+  positionsCount: number;
+  ordersCount: number;
+}
+
+export interface PremarketAnalysis {
+  readiness: string;
+  bias: string;
+  pcr: number;
+  keyLevels: { poc: number; vah: number; val: number };
+  checklist: string[];
+  score: number;
+  spreadQuality: number;
+}
+
+export interface TomorrowTradePlan {
+  generatedFor: string;
+  symbol: MarketSymbol;
+  expiry: string;
+  primaryBias: string;
+  candidate: { side: 'CALL' | 'PUT'; strike: number; instrumentKey?: string; lastPremium: number };
+  entryRules: string[];
+  invalidations: string[];
+  levels: { poc: number; vah: number; val: number };
+  tqs: number;
+  safeMode: boolean;
 }
 
 export interface StrategyRoute {
@@ -141,6 +191,10 @@ export interface TerminalSnapshot {
   aggressiveMode?: boolean;
   dataSource?: string;
   dataWarnings?: string[];
+  upstoxConnection?: UpstoxConnectionState;
+  expiryState?: ExpiryState;
+  premarketAnalysis?: PremarketAnalysis;
+  tomorrowTradePlan?: TomorrowTradePlan;
   symbol: MarketSymbol;
   spot: number;
   atmStrike: number;

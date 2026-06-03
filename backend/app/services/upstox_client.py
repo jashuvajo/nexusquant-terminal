@@ -93,6 +93,17 @@ class UpstoxClient:
             params={"instrument_key": ",".join(instrument_keys)},
         )
 
+
+    async def option_contracts(self, instrument_key: str, expiry_date: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"instrument_key": instrument_key}
+        if expiry_date:
+            params["expiry_date"] = expiry_date
+        return await self._request(
+            "GET",
+            f"{UPSTOX_API_BASE}/v2/option/contract",
+            params=params,
+        )
+
     async def option_chain(self, instrument_key: str, expiry_date: str) -> dict[str, Any]:
         return await self._request(
             "GET",

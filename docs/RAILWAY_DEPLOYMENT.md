@@ -98,8 +98,9 @@ UPSTOX_REDIRECT_URI=https://${{RAILWAY_PUBLIC_DOMAIN}}/api/upstox/callback
 PRIMARY_SYMBOL=NIFTY
 NIFTY_INSTRUMENT_KEY=NSE_INDEX|Nifty 50
 SENSEX_INSTRUMENT_KEY=BSE_INDEX|SENSEX
-NIFTY_EXPIRY_DATE=YYYY-MM-DD
-SENSEX_EXPIRY_DATE=YYYY-MM-DD
+# Optional: leave blank to auto-select nearest expiry from Upstox option contracts
+NIFTY_EXPIRY_DATE=
+SENSEX_EXPIRY_DATE=
 MARKET_POLL_SECONDS=1
 ENABLE_LIVE_TRADING=false
 AGGRESSIVE_MODE=false
@@ -218,28 +219,41 @@ Expected:
 }
 ```
 
-## 3. Test real market endpoints
+## 3. Test real Upstox connection, funds and expiries
 
-Test NIFTY:
+Check backend health:
+
+```text
+https://your-railway-domain.up.railway.app/health
+```
+
+Check token:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/token/status
+```
+
+Check live Upstox account funds, positions and orders:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/account-summary
+```
+
+Check dynamic expiry discovery from Upstox option contracts:
+
+```text
+https://your-railway-domain.up.railway.app/api/market/expiries/NIFTY
+https://your-railway-domain.up.railway.app/api/market/expiries/SENSEX
+```
+
+Test full closed-market/live snapshot. This includes selected expiry, available funds, pre-market/closed-market analysis and tomorrow candidate plan:
 
 ```text
 https://your-railway-domain.up.railway.app/api/market/snapshot/NIFTY
-```
-
-Test SENSEX:
-
-```text
 https://your-railway-domain.up.railway.app/api/market/snapshot/SENSEX
 ```
 
-If you see `CONFIGURATION_REQUIRED`, update:
-
-```text
-NIFTY_EXPIRY_DATE
-SENSEX_EXPIRY_DATE
-```
-
-These must be real Upstox-supported option expiry dates in `YYYY-MM-DD` format.
+`NIFTY_EXPIRY_DATE` and `SENSEX_EXPIRY_DATE` are optional. If you leave them blank, NexusQuant selects the nearest available expiry returned by Upstox `/v2/option/contract`. If you set them and Upstox does not return that expiry, the backend warns and falls back to the nearest available expiry.
 
 ## 4. Deploy frontend on Vercel
 

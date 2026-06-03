@@ -27,15 +27,25 @@ export function PortfolioPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
   return (
     <Card title="Upstox Portfolio" eyebrow="Broker, funds, positions, orders">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Capital" value={formatCurrency(snapshot.portfolio.capital)} tone="cyan" />
-        <MetricCard label="Margin Used" value={formatCurrency(snapshot.portfolio.margin)} tone="amber" />
+        <MetricCard label="Available Funds" value={formatCurrency(snapshot.portfolio.availableMargin ?? snapshot.portfolio.capital)} helper={snapshot.portfolio.fundsSource === 'upstox' ? 'Live Upstox funds' : 'Funds not verified'} tone="cyan" />
+        <MetricCard label="Margin Used" value={formatCurrency(snapshot.portfolio.usedMargin ?? snapshot.portfolio.margin)} helper={`Exposure ${snapshot.liveExposurePct}%`} tone="amber" />
         <MetricCard label="Realized PnL" value={formatCurrency(snapshot.portfolio.realizedPnl)} tone="emerald" />
         <MetricCard label="Unrealized PnL" value={formatCurrency(snapshot.portfolio.unrealizedPnl)} tone="violet" />
         <MetricCard label="Positions" value={snapshot.portfolio.positions} helper="Open index option legs" tone="cyan" />
         <MetricCard label="Orders" value={snapshot.portfolio.orders} helper="Session order count" tone="emerald" />
-        <MetricCard label="Broker Health" value={`${snapshot.infra.brokerHealth}%`} helper="Upstox adapter" tone="cyan" />
-        <MetricCard label="Exec Quality" value={`${snapshot.portfolio.executionQuality}%`} helper="Fill and slippage score" tone="emerald" />
+        <MetricCard label="Upstox Link" value={snapshot.upstoxConnection?.connected ? 'CONNECTED' : 'CHECK'} helper={snapshot.upstoxConnection?.dataSource ?? 'Waiting for broker data'} tone={snapshot.upstoxConnection?.connected ? 'emerald' : 'rose'} />
+        <MetricCard label="Payin / Exposure" value={formatCurrency(snapshot.portfolio.payinAmount ?? 0)} helper={`Exposure margin ${formatCurrency(snapshot.portfolio.exposureMargin ?? 0)}`} tone="violet" />
       </div>
+      {snapshot.expiryState && (
+        <div className="mt-4 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm text-slate-200">
+          <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">Dynamic expiry check</p>
+          <p className="mt-2">
+            Selected {snapshot.expiryState.symbol} expiry <span className="font-mono text-white">{snapshot.expiryState.selectedExpiry}</span> from{' '}
+            <span className="font-mono text-white">{snapshot.expiryState.availableExpiryCount}</span> Upstox expiries ({snapshot.expiryState.source.replaceAll('_', ' ')}).
+          </p>
+          <p className="mt-1 text-xs text-slate-400">Available: {snapshot.expiryState.availableExpiries.slice(0, 6).join(', ')}</p>
+        </div>
+      )}
     </Card>
   );
 }
@@ -169,6 +179,36 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
         </div>
       </div>
       <p className="mt-4 rounded-2xl bg-slate-950/60 p-4 text-sm text-slate-300">{snapshot.marketProfile.acceptanceZone}</p>
+      {snapshot.premarketAnalysis && (
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-200">Pre-market / closed-market analysis</p>
+            <div className="mt-3 grid gap-2 text-sm text-slate-300">
+              <div className="flex justify-between"><span>Readiness</span><span className="font-mono text-white">{snapshot.premarketAnalysis.readiness.replaceAll('_', ' ')}</span></div>
+              <div className="flex justify-between"><span>Bias</span><span className="font-mono text-white">{snapshot.premarketAnalysis.bias}</span></div>
+              <div className="flex justify-between"><span>PCR</span><span className="font-mono text-white">{snapshot.premarketAnalysis.pcr}</span></div>
+              <div className="flex justify-between"><span>Score</span><span className="font-mono text-white">{snapshot.premarketAnalysis.score}</span></div>
+            </div>
+            <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-400">
+              {snapshot.premarketAnalysis.checklist.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </div>
+          {snapshot.tomorrowTradePlan && (
+            <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-emerald-200">Tomorrow candidate plan</p>
+              <p className="mt-3 text-sm text-slate-200">
+                {snapshot.tomorrowTradePlan.symbol} {snapshot.tomorrowTradePlan.candidate.strike} {snapshot.tomorrowTradePlan.candidate.side} | Expiry{' '}
+                <span className="font-mono text-white">{snapshot.tomorrowTradePlan.expiry}</span> | Last premium{' '}
+                <span className="font-mono text-white">{snapshot.tomorrowTradePlan.candidate.lastPremium}</span>
+              </p>
+              <p className="mt-2 text-xs text-slate-400">Instrument: {snapshot.tomorrowTradePlan.candidate.instrumentKey ?? 'not available'}</p>
+              <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                {snapshot.tomorrowTradePlan.entryRules.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
 from app.core.config import Settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.risk_engine import RiskEngine
-from app.services.session import MarketPhase, current_session_state
+from app.services.session import IST, MarketPhase, current_session_state
 from app.services.upstox_client import UpstoxClient, UpstoxDataError
 
 
@@ -69,12 +69,10 @@ class RealTimeMarketEngine:
             raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
 
         instrument_key = self.settings.instrument_key_for(selected_symbol)
-        expiry = self.settings.expiry_for(selected_symbol)
-        if not expiry:
-            raise MarketConfigurationError(f"{selected_symbol}_EXPIRY_DATE must be configured in YYYY-MM-DD format.")
-
         session = current_session_state()
         data_warnings: list[str] = []
+        expiry_state = await self.resolve_expiry(selected_symbol, instrument_key, data_warnings)
+        expiry = expiry_state["selectedExpiry"]
 
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
@@ -174,6 +172,17 @@ class RealTimeMarketEngine:
             "aggressiveMode": self.settings.aggressive_mode,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
+            "upstoxConnection": {
+                "connected": True,
+                "dataSource": "Upstox REST APIs",
+                "fundsAvailable": portfolio["availableMargin"],
+                "fundsUsed": portfolio["usedMargin"],
+                "positionsCount": portfolio["positions"],
+                "ordersCount": portfolio["orders"],
+            },
+            "expiryState": expiry_state,
+            "premarketAnalysis": self._premarket_analysis(session.phase, market_profile, option_bias, spread_quality, tqs),
+            "tomorrowTradePlan": self._tomorrow_trade_plan(selected_symbol, expiry, atm_strike, selected_side, selected_instrument, selected_ltp, tqs, market_profile, option_bias, risk_decision.safe_mode),
             "symbol": selected_symbol,
             "spot": round(spot, 2),
             "atmStrike": atm_strike,
@@ -232,6 +241,50 @@ class RealTimeMarketEngine:
                 "candidateSide": selected_side,
                 "candidateLtp": selected_ltp,
             },
+        }
+
+
+    async def resolve_expiry(self, symbol: str, instrument_key: str, warnings: list[str] | None = None) -> dict[str, Any]:
+        warnings = warnings if warnings is not None else []
+        configured = self.settings.expiry_for(symbol)
+        contracts_payload = await self.client.option_contracts(instrument_key)
+        contracts = contracts_payload.get("data") or []
+        expiries = sorted({str(item.get("expiry")) for item in contracts if item.get("expiry")})
+        if not expiries:
+            raise UpstoxDataError(f"Upstox returned no option expiries for {symbol} ({instrument_key}).")
+
+        today = datetime.now(IST).date()
+        parsed: list[tuple[date, str]] = []
+        for expiry in expiries:
+            try:
+                parsed.append((date.fromisoformat(expiry), expiry))
+            except ValueError:
+                warnings.append(f"Ignored unparseable Upstox expiry: {expiry}")
+        if not parsed:
+            raise UpstoxDataError(f"Upstox option contracts for {symbol} did not include parseable expiry dates.")
+
+        configured_valid = configured in expiries if configured else False
+        if configured_valid:
+            selected = configured
+            source = "configured"
+        else:
+            future = [(dt, raw) for dt, raw in parsed if dt >= today]
+            selected = (future[0] if future else parsed[-1])[1]
+            source = "upstox_nearest"
+            if configured:
+                warnings.append(f"Configured {symbol}_EXPIRY_DATE={configured} not found in Upstox contracts; using nearest available {selected}.")
+
+        selected_contracts = [item for item in contracts if item.get("expiry") == selected]
+        return {
+            "symbol": symbol,
+            "underlyingInstrumentKey": instrument_key,
+            "selectedExpiry": selected,
+            "source": source,
+            "configuredExpiry": configured,
+            "availableExpiries": expiries[:12],
+            "availableExpiryCount": len(expiries),
+            "selectedContractCount": len(selected_contracts),
+            "lastCheckedAt": datetime.now(timezone.utc).isoformat(),
         }
 
     async def _optional(self, coroutine: Any, label: str, warnings: list[str]) -> dict[str, Any] | None:
@@ -468,23 +521,42 @@ class RealTimeMarketEngine:
         return "RANGE_ABSORPTION"
 
     def _portfolio(self, funds: dict[str, Any] | None, positions: dict[str, Any] | None, orders: dict[str, Any] | None, warnings: list[str]) -> dict[str, Any]:
-        capital = 0.0
-        margin = 0.0
+        available_margin = 0.0
+        used_margin = 0.0
+        payin_amount = 0.0
+        exposure_margin = 0.0
+        funds_source = "unavailable"
+        funds_breakdown: dict[str, Any] = {}
         if funds:
             data = funds.get("data") or {}
-            equity = data.get("equity") or data.get("Equity") or data
-            capital = as_float(equity.get("available_margin") or equity.get("cash") or equity.get("net") or 0)
-            margin = as_float(equity.get("used_margin") or equity.get("utilised_margin") or 0)
+            equity = data.get("equity") or data.get("Equity") or data.get("available_margin") and data or {}
+            available_margin = as_float(equity.get("available_margin") or equity.get("cash_available") or equity.get("cash") or equity.get("net") or 0)
+            used_margin = as_float(equity.get("used_margin") or equity.get("utilised_margin") or equity.get("margin_used") or 0)
+            payin_amount = as_float(equity.get("payin_amount") or 0)
+            exposure_margin = as_float(equity.get("exposure_margin") or 0)
+            funds_source = "upstox"
+            funds_breakdown = {
+                "availableMargin": round(available_margin, 2),
+                "usedMargin": round(used_margin, 2),
+                "payinAmount": round(payin_amount, 2),
+                "exposureMargin": round(exposure_margin, 2),
+            }
         pos_rows = (positions or {}).get("data") or []
         unrealized = sum(as_float(row.get("pnl") or row.get("unrealised") or row.get("unrealized_pnl")) for row in pos_rows if isinstance(row, dict))
         realized = sum(as_float(row.get("realised") or row.get("realized_pnl")) for row in pos_rows if isinstance(row, dict))
-        exposure = round(clamp((margin / capital) * 100)) if capital > 0 else 0
+        exposure = round(clamp((used_margin / available_margin) * 100)) if available_margin > 0 else 0
         order_rows = (orders or {}).get("data") or []
         if not funds:
-            warnings.append("Funds endpoint unavailable; portfolio capital/margin shown as 0 until Upstox returns data.")
+            warnings.append("Funds endpoint unavailable; live Upstox available margin could not be verified.")
         return {
-            "capital": round(capital, 2),
-            "margin": round(margin, 2),
+            "capital": round(available_margin, 2),
+            "margin": round(used_margin, 2),
+            "availableMargin": round(available_margin, 2),
+            "usedMargin": round(used_margin, 2),
+            "payinAmount": round(payin_amount, 2),
+            "exposureMargin": round(exposure_margin, 2),
+            "fundsSource": funds_source,
+            "fundsBreakdown": funds_breakdown,
             "realizedPnl": round(realized, 2),
             "unrealizedPnl": round(unrealized, 2),
             "executionQuality": 0,
