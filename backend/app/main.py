@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 from starlette.responses import Response
 
-from app.api.routes import router
+from app.api.routes import alias_router, router
 from app.core.config import get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
@@ -52,6 +52,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(alias_router)
 
 
 @app.get("/health")

@@ -45,7 +45,7 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
                 {issue?.message ?? 'Connecting to the Render backend WebSocket. The terminal will stay blank until a real Upstox snapshot is received.'}
               </p>
               <div className="mt-6 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
-                This build intentionally removed local simulated prices. Configure Upstox token, expiry dates, and backend URLs to see live or closed-market analysis.
+                This build intentionally removed local simulated prices. Configure/redeploy Railway backend, Upstox token, and Vercel URLs to see live or closed-market analysis.
               </div>
             </div>
             <div className="rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
@@ -54,7 +54,7 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
                 <li>Open <span className="font-mono text-cyan-200">{apiUrl}/health</span>.</li>
                 <li>Open <span className="font-mono text-cyan-200">{apiUrl}/api/upstox/token/status</span>.</li>
                 <li>If token is missing, open <span className="font-mono text-cyan-200">{apiUrl}/api/upstox/login-url</span>.</li>
-                <li>Set <span className="font-mono text-cyan-200">NIFTY_EXPIRY_DATE</span> and <span className="font-mono text-cyan-200">SENSEX_EXPIRY_DATE</span> in Render.</li>
+                <li>Open <span className="font-mono text-cyan-200">{apiUrl}/api/deployment/status</span> and confirm the latest Upstox-only API is deployed.</li>
               </ol>
             </div>
           </div>

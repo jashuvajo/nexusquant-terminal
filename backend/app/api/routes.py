@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +16,7 @@ from app.services.upstox_auth import UpstoxAuthError, UpstoxAuthService
 from app.services.upstox_client import UpstoxAuthRequired, UpstoxClient, UpstoxDataError
 
 router = APIRouter(prefix="/api", tags=["terminal"])
+alias_router = APIRouter(tags=["upstox-aliases"])
 
 
 class ScalpOrderRequest(BaseModel):
@@ -63,6 +66,29 @@ async def terminal_state(settings: Settings = Depends(get_settings)) -> dict[str
         "liveTradingEnabled": settings.enable_live_trading,
         "aggressiveMode": settings.aggressive_mode,
         "marketPollSeconds": settings.market_poll_seconds,
+    }
+
+
+@router.get("/deployment/status")
+async def deployment_status(settings: Settings = Depends(get_settings), auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    token_status = await auth_service.token_status()
+    return {
+        "service": settings.app_name,
+        "apiVersion": "0.4.0-upstox-only",
+        "environment": settings.environment,
+        "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+        "railwayService": os.getenv("RAILWAY_SERVICE_NAME"),
+        "upstoxConfigured": token_status["configured"],
+        "upstoxTokenPresent": token_status["hasToken"],
+        "routes": [
+            "/health",
+            "/api/upstox/login-url",
+            "/api/upstox/callback",
+            "/api/upstox/token/status",
+            "/api/upstox/account-summary",
+            "/api/market/expiries/NIFTY",
+            "/api/market/snapshot/NIFTY",
+        ],
     }
 
 
@@ -191,3 +217,26 @@ async def risk_config(settings: Settings = Depends(get_settings)) -> dict:
         "enableLiveTrading": settings.enable_live_trading,
         "aggressiveMode": settings.aggressive_mode,
     }
+
+
+@alias_router.get("/upstox/login-url")
+async def upstox_login_url_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict[str, str]:
+    return await upstox_login_url(auth_service)
+
+
+@alias_router.get("/upstox/callback")
+async def upstox_callback_alias(
+    code: str = Query(..., description="Authorization code returned by Upstox"),
+    auth_service: UpstoxAuthService = Depends(get_upstox_auth),
+) -> dict:
+    return await upstox_callback(code, auth_service)
+
+
+@alias_router.get("/upstox/token/status")
+async def upstox_token_status_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    return await upstox_token_status(auth_service)
+
+
+@alias_router.get("/deployment/status")
+async def deployment_status_alias(settings: Settings = Depends(get_settings), auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    return await deployment_status(settings, auth_service)
