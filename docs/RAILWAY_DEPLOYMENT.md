@@ -1,0 +1,349 @@
+# Deploy NexusQuant Backend on Railway and Frontend on Vercel
+
+Use this for the current deployment target:
+
+- Backend: Railway
+- Frontend: Vercel
+- Database: Railway PostgreSQL
+- Redis/token cache: Railway Redis
+- Future AWS migration: see `docs/AWS_DEPLOYMENT.md`
+
+The backend uses WebSockets at `/ws/market`. Railway supports public web services and dynamic ports; the Dockerfile now binds to Railway's `$PORT`.
+
+## 1. Deploy backend on Railway
+
+### Step 1: Create Railway project
+
+1. Open Railway.
+2. Click **New Project**.
+3. Choose **Deploy from GitHub repo**.
+4. Select this repository.
+
+### Step 2: Configure backend service root
+
+Because this is a monorepo, set the backend service root directory to:
+
+```text
+/backend
+```
+
+Railway should detect:
+
+```text
+backend/Dockerfile
+backend/railway.json
+```
+
+If Railway asks for config file path, use:
+
+```text
+/backend/railway.json
+```
+
+If Railway asks for Dockerfile path, use:
+
+```text
+Dockerfile
+```
+
+or from repo root:
+
+```text
+/backend/Dockerfile
+```
+
+### Step 3: Add PostgreSQL
+
+In the same Railway project:
+
+1. Click **New**.
+2. Choose **Database**.
+3. Choose **PostgreSQL**.
+4. Name it something clear, for example:
+
+```text
+Postgres
+```
+
+Railway automatically creates a `DATABASE_URL` variable on the Postgres service.
+
+### Step 4: Add Redis
+
+In the same Railway project:
+
+1. Click **New**.
+2. Choose **Database**.
+3. Choose **Redis**.
+4. Name it something clear, for example:
+
+```text
+Redis
+```
+
+Railway automatically creates a `REDIS_URL` variable on the Redis service.
+
+### Step 5: Add backend variables
+
+Open the backend service -> **Variables**.
+
+Add these variables:
+
+```text
+ENVIRONMENT=production
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+REDIS_URL=${{Redis.REDIS_URL}}
+UPSTOX_API_KEY=your_upstox_api_key
+UPSTOX_API_SECRET=your_upstox_api_secret
+UPSTOX_REDIRECT_URI=https://${{RAILWAY_PUBLIC_DOMAIN}}/api/upstox/callback
+PRIMARY_SYMBOL=NIFTY
+NIFTY_INSTRUMENT_KEY=NSE_INDEX|Nifty 50
+SENSEX_INSTRUMENT_KEY=BSE_INDEX|SENSEX
+NIFTY_EXPIRY_DATE=YYYY-MM-DD
+SENSEX_EXPIRY_DATE=YYYY-MM-DD
+MARKET_POLL_SECONDS=1
+ENABLE_LIVE_TRADING=false
+AGGRESSIVE_MODE=false
+AI_SCORE_THRESHOLD=76
+SAFE_MODE_THRESHOLD=86
+MAX_EXPOSURE_PCT=42
+DAILY_DRAWDOWN_PCT=3
+```
+
+If your Railway database service names are different, change references accordingly:
+
+```text
+DATABASE_URL=${{YourPostgresServiceName.DATABASE_URL}}
+REDIS_URL=${{YourRedisServiceName.REDIS_URL}}
+```
+
+Important: keep broker secrets only in Railway backend variables. Do not add Upstox secrets to Vercel.
+
+### Step 6: Generate public backend domain
+
+Open backend service -> **Settings** -> **Networking**.
+
+Click:
+
+```text
+Generate Domain
+```
+
+Railway gives a URL like:
+
+```text
+https://nexusquant-api-production.up.railway.app
+```
+
+This is your backend URL.
+
+### Step 7: Update CORS variable
+
+After you deploy Vercel, set this to your real Vercel domain. For first backend test, you can use:
+
+```text
+CORS_ORIGINS=http://localhost:5173
+```
+
+After Vercel deploys, update it to:
+
+```text
+CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+```
+
+### Step 8: Deploy backend
+
+Railway should deploy automatically after variable changes. If not, click:
+
+```text
+Deploy
+```
+
+Check backend health:
+
+```text
+https://your-railway-domain.up.railway.app/health
+```
+
+Expected:
+
+```json
+{
+  "status": "ok",
+  "upstoxConfigured": true,
+  "upstoxTokenPresent": false
+}
+```
+
+## 2. Configure Upstox token on Railway backend
+
+### Step 1: Set Upstox redirect URL
+
+In Upstox developer console, set redirect URL exactly:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/callback
+```
+
+This must match `UPSTOX_REDIRECT_URI`.
+
+### Step 2: Get login URL
+
+Open:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/login-url
+```
+
+Copy the `loginUrl` from the response and open it.
+
+### Step 3: Login and approve
+
+1. Login to Upstox.
+2. Approve access.
+3. Upstox redirects back to Railway.
+4. Backend stores token in Redis.
+
+Check token:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/token/status
+```
+
+Expected:
+
+```json
+{
+  "configured": true,
+  "hasToken": true
+}
+```
+
+## 3. Test real market endpoints
+
+Test NIFTY:
+
+```text
+https://your-railway-domain.up.railway.app/api/market/snapshot/NIFTY
+```
+
+Test SENSEX:
+
+```text
+https://your-railway-domain.up.railway.app/api/market/snapshot/SENSEX
+```
+
+If you see `CONFIGURATION_REQUIRED`, update:
+
+```text
+NIFTY_EXPIRY_DATE
+SENSEX_EXPIRY_DATE
+```
+
+These must be real Upstox-supported option expiry dates in `YYYY-MM-DD` format.
+
+## 4. Deploy frontend on Vercel
+
+### Step 1: Import project
+
+1. Open Vercel.
+2. Click **Add New** -> **Project**.
+3. Import the same GitHub repository.
+4. Keep root directory as repo root:
+
+```text
+./
+```
+
+`vercel.json` already builds `frontend`.
+
+### Step 2: Add Vercel environment variables
+
+```text
+VITE_API_URL=https://your-railway-domain.up.railway.app
+VITE_WS_URL=wss://your-railway-domain.up.railway.app/ws/market
+```
+
+Use:
+
+- `https://` for API URL
+- `wss://` for WebSocket URL
+
+### Step 3: Deploy
+
+Click **Deploy**.
+
+Vercel gives a URL like:
+
+```text
+https://nexusquant-terminal.vercel.app
+```
+
+## 5. Final backend CORS update
+
+Go back to Railway backend service -> **Variables**.
+
+Set:
+
+```text
+CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+```
+
+Redeploy Railway backend.
+
+## 6. Open frontend
+
+Open:
+
+```text
+https://your-vercel-domain.vercel.app
+```
+
+If connected, the header should show:
+
+```text
+Real Upstox stream live
+```
+
+If not connected, frontend shows the exact status:
+
+```text
+UPSTOX_AUTH_REQUIRED
+CONFIGURATION_REQUIRED
+UPSTOX_DATA_ERROR
+BACKEND_WS_ERROR
+```
+
+## 7. Live trading mode
+
+Start safely:
+
+```text
+ENABLE_LIVE_TRADING=false
+AGGRESSIVE_MODE=false
+```
+
+This gives real Upstox analysis only and blocks live order placement.
+
+Only after verifying broker token, data, expiry, lot size, risk, and small quantity testing, change Railway variables:
+
+```text
+ENABLE_LIVE_TRADING=true
+AGGRESSIVE_MODE=true
+```
+
+Then redeploy backend.
+
+## 8. Future AWS migration
+
+When you move to AWS later, keep frontend Vercel variables the same pattern, just replace Railway domain with AWS ALB/custom backend domain:
+
+```text
+VITE_API_URL=https://api.yourdomain.com
+VITE_WS_URL=wss://api.yourdomain.com/ws/market
+```
+
+See:
+
+```text
+docs/AWS_DEPLOYMENT.md
+```

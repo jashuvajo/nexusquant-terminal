@@ -4,13 +4,13 @@ NexusQuant is a deployable institutional-style AI scalping terminal scaffold for
 
 ## AWS + Vercel deployment
 
-For AWS backend deployment, use ECS Fargate with an Application Load Balancer because the backend exposes WebSockets. See [`docs/AWS_DEPLOYMENT.md`](docs/AWS_DEPLOYMENT.md).
+For the current Railway backend deployment with Vercel frontend, see [`docs/RAILWAY_DEPLOYMENT.md`](docs/RAILWAY_DEPLOYMENT.md). For future AWS backend deployment, use ECS Fargate with an Application Load Balancer because the backend exposes WebSockets; see [`docs/AWS_DEPLOYMENT.md`](docs/AWS_DEPLOYMENT.md).
 
 ## Stack
 
 - Frontend: React, TypeScript, Vite, TailwindCSS, Lightweight Charts, Recharts, Framer Motion, WebSocket client
 - Backend: FastAPI, asyncio, WebSockets, Redis boundary, PostgreSQL boundary, XGBoost-ready AI scoring, Prometheus metrics, Docker
-- Deployment: Vercel frontend, Render backend, PostgreSQL, Redis, Prometheus/Grafana-ready metrics, GitHub Actions CI
+- Deployment: Vercel frontend, Railway backend now, AWS ECS/Fargate later, PostgreSQL, Redis, Prometheus/Grafana-ready metrics, GitHub Actions CI
 
 ## Modules
 
@@ -24,7 +24,7 @@ npm install
 npm run dev
 ```
 
-The frontend connects to `VITE_WS_URL`. If the backend is unavailable, it automatically runs a local simulated one-second market stream.
+The frontend connects to `VITE_WS_URL`. It does not show dummy prices; if the backend or Upstox is unavailable, it shows an explicit connection/configuration status.
 
 ## Local backend
 
