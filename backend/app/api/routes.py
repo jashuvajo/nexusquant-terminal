@@ -17,6 +17,7 @@ from app.services.historical_trainer import HistoricalTrainer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
+from app.services.strategy_optimizer import StrategyOptimizer
 from app.services.session import current_session_state
 from app.services.trading_control import TradingControl
 from app.services.upstox_auth import UpstoxAuthError, UpstoxAuthService
@@ -102,6 +103,10 @@ def get_historical_trainer(
     return HistoricalTrainer(settings, client, learner)
 
 
+def get_strategy_optimizer(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> StrategyOptimizer:
+    return StrategyOptimizer(settings, client)
+
+
 def get_market_engine(
     settings: Settings = Depends(get_settings),
     client: UpstoxClient = Depends(get_upstox),
@@ -161,6 +166,8 @@ async def deployment_status(
             "/api/ai-learning/reset",
             "/api/ai-learning/train-historical",
             "/api/ai-learning/train-now",
+            "/api/strategy-optimizer/run",
+            "/api/strategy-optimizer/run-both",
             "/api/event-journal/recent",
         ],
     }
@@ -404,6 +411,41 @@ async def event_journal_record(request: EventRecordRequest, journal: EventJourna
         payload=request.payload,
     )
     return {"event": event}
+
+
+@router.get("/strategy-optimizer/run")
+async def strategy_optimizer_run(
+    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    target_samples: int = 1000,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_param_sets: int = 96,
+    optimizer: StrategyOptimizer = Depends(get_strategy_optimizer),
+) -> dict:
+    try:
+        return await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/strategy-optimizer/run-both")
+async def strategy_optimizer_run_both(
+    target_samples: int = 1000,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_param_sets: int = 96,
+    optimizer: StrategyOptimizer = Depends(get_strategy_optimizer),
+) -> dict:
+    results = {}
+    errors = {}
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            results[symbol] = await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets)
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            errors[symbol] = str(exc)
+    if not results:
+        raise HTTPException(status_code=503, detail=errors)
+    return {"results": results, "errors": errors}
 
 
 @router.post("/ai-learning/train-now")

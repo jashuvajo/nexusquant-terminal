@@ -806,3 +806,33 @@ WebSocket can be re-enabled later for AWS/ALB by setting:
 VITE_FORCE_WEBSOCKET=true
 VITE_STREAM_MODE=websocket
 ```
+
+
+## Strategy optimizer engine
+
+Run a parameter grid search over real Upstox historical candles:
+
+```text
+/api/strategy-optimizer/run?symbol=NIFTY&target_samples=1000
+/api/strategy-optimizer/run?symbol=SENSEX&target_samples=1000
+/api/strategy-optimizer/run-both?target_samples=1000
+```
+
+It tests combinations of:
+
+- minimum TQS
+- breakout ATR strength
+- volume multiplier
+- target points
+- stop points
+- trailing ATR
+
+It returns:
+
+- best balanced settings
+- best profit-factor settings
+- best win-rate settings
+- best drawdown settings
+- top 10 parameter sets
+
+Use optimizer output to set different NIFTY/SENSEX rules instead of relying on one profile for both indexes.
