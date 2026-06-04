@@ -374,7 +374,7 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
             <MetricCard label="Paper Trading" value={auto.paperTrading ? 'ON' : 'OFF'} helper="Shadow execution safety" tone={auto.paperTrading ? 'emerald' : 'amber'} />
             <MetricCard label="Signals / Tick" value={auto.signalsThisTick} helper="NIFTY + SENSEX candidates" tone="cyan" />
             <MetricCard label="Replay Buffer" value={auto.replay.storedSnapshots} helper="Stored market snapshots" tone="violet" />
-            <MetricCard label="AI Learning" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.score}`} tone="emerald" />
+            <MetricCard label="AI Learning" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0} | ${auto.onlineLearning.priorVersion ?? 'prior'}`} tone="emerald" />
             <MetricCard label="Paper Trades" value={auto.dailyReport.paperTrades} helper={`${auto.dailyReport.openTrades} open`} tone="cyan" />
             <MetricCard label="Win Rate" value={`${auto.dailyReport.winRate}%`} helper={`${auto.dailyReport.wins}W / ${auto.dailyReport.losses}L`} tone="emerald" />
             <MetricCard label="Profit Factor" value={auto.dailyReport.profitFactor} helper="Paper outcomes" tone="amber" />
@@ -408,6 +408,7 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
             <p className="font-bold uppercase tracking-[0.2em]">Online learning every tick</p>
             <p className="mt-2">{auto.onlineLearning.note}</p>
+            <p className="mt-2 text-xs text-amber-200/80">Pretrained: {auto.onlineLearning.pretrained ? 'YES' : 'NO'} | Paper samples {auto.onlineLearning.paperSamples ?? 0} | Live samples {auto.onlineLearning.liveSamples ?? 0} | PF {auto.onlineLearning.profitFactor ?? 0}</p>
           </div>
         </>
       )}

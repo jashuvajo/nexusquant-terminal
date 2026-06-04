@@ -304,7 +304,7 @@ export interface AutoTraderState {
   exitEngine: { rules: string[]; exitsThisTick: Array<Record<string, unknown>> };
   slippageModel: { averageExpectedSlippage: number; minimumRequiredMovePoints: number; model: string };
   positionSizing: { capital: number; candidates: Array<Record<string, unknown>> };
-  onlineLearning: { enabled: boolean; mode: string; samples: number; score: number; lastUpdatedAt?: string; note: string };
+  onlineLearning: { enabled: boolean; pretrained?: boolean; priorVersion?: string; mode: string; samples: number; score?: number; learningScore?: number; paperSamples?: number; liveSamples?: number; profitFactor?: number; calibration?: Record<string, unknown>; lastUpdatedAt?: string; note: string };
   dailyReport: {
     totalSignals: number;
     paperTrades: number;

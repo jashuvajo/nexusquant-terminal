@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.core.config import Settings, get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.auto_trader import AutoTraderEngine
+from app.services.ai_learning import ContinuousAILearner
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
@@ -66,8 +67,16 @@ def get_trading_control(settings: Settings = Depends(get_settings)) -> TradingCo
     return TradingControl(settings.redis_url)
 
 
-def get_auto_trader(settings: Settings = Depends(get_settings), control: TradingControl = Depends(get_trading_control)) -> AutoTraderEngine:
-    return AutoTraderEngine(settings, control)
+def get_ai_learner(settings: Settings = Depends(get_settings)) -> ContinuousAILearner:
+    return ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled)
+
+
+def get_auto_trader(
+    settings: Settings = Depends(get_settings),
+    control: TradingControl = Depends(get_trading_control),
+    learner: ContinuousAILearner = Depends(get_ai_learner),
+) -> AutoTraderEngine:
+    return AutoTraderEngine(settings, control, learner)
 
 
 def get_market_engine(
@@ -123,6 +132,9 @@ async def deployment_status(
             "/api/market/snapshots",
             "/api/auto-trader/status",
             "/api/auto-trader/reset",
+            "/api/ai-learning/status",
+            "/api/ai-learning/export",
+            "/api/ai-learning/reset",
         ],
     }
 
@@ -331,6 +343,26 @@ async def place_scalp_order(
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"submitted": True, "session": session.label, "order": order, "upstox": response}
+
+
+@router.get("/ai-learning/status")
+async def ai_learning_status(learner: ContinuousAILearner = Depends(get_ai_learner)) -> dict:
+    return await learner.status()
+
+
+@router.get("/ai-learning/export")
+async def ai_learning_export(learner: ContinuousAILearner = Depends(get_ai_learner)) -> dict:
+    return await learner.export_state()
+
+
+@router.post("/ai-learning/reset")
+async def ai_learning_reset(learner: ContinuousAILearner = Depends(get_ai_learner)) -> dict:
+    return await learner.reset()
+
+
+@router.get("/ai-learning/reset")
+async def ai_learning_reset_get(learner: ContinuousAILearner = Depends(get_ai_learner)) -> dict:
+    return await learner.reset()
 
 
 @router.get("/auto-trader/status")

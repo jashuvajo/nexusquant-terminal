@@ -678,3 +678,47 @@ Live auto execution is blocked if:
 - chop filter blocks
 - STOP is active
 - risk/capital/session gates fail
+
+
+## Pretrained continuous AI learning
+
+The backend starts with an institutional prior model:
+
+```text
+institutional-prior-v1
+```
+
+This prior is not a claim of historical profitability. It seeds sensible initial weights for:
+
+- delta engine
+- momentum engine
+- heatmap engine
+- volume engine
+- regime engine
+- spread analysis
+- option-chain bias
+- gamma positioning
+- IV expansion
+- market profile alignment
+
+Then it continuously updates in the backend from:
+
+- every real-data snapshot tick
+- paper/shadow trade outcomes
+- future live outcomes when live trading is enabled
+
+Endpoints:
+
+```text
+/api/ai-learning/status
+/api/ai-learning/export
+/api/ai-learning/reset
+```
+
+Recommended variable:
+
+```text
+AI_LEARNING_ENABLED=true
+```
+
+Use `/api/ai-learning/export` before resetting if you want to inspect current calibration state.

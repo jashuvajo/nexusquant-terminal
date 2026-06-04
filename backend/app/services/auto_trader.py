@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.services.ai_learning import ContinuousAILearner
 from app.services.trading_control import TradingControl
 
 
@@ -95,9 +96,10 @@ class AutoTraderEngine:
     _shared_learning_score = 50.0
     _shared_last_learning_update: str | None = None
 
-    def __init__(self, settings: Settings, trading_control: TradingControl) -> None:
+    def __init__(self, settings: Settings, trading_control: TradingControl, learner: ContinuousAILearner | None = None) -> None:
         self.settings = settings
         self.trading_control = trading_control
+        self.learner = learner or ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled)
         self.replay_buffer = AutoTraderEngine._shared_replay_buffer
         self.open_paper = AutoTraderEngine._shared_open_paper
         self.closed_paper = AutoTraderEngine._shared_closed_paper
@@ -130,6 +132,7 @@ class AutoTraderEngine:
                     signal_events.append(opened.lifecycle[-1])
 
         exits = self._update_open_paper(snapshots)
+        online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
         return {
             "paperTrading": self.settings.paper_trading,
@@ -148,7 +151,7 @@ class AutoTraderEngine:
             },
             "slippageModel": self._slippage_summary(candidates),
             "positionSizing": self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
-            "onlineLearning": self.learning_status(),
+            "onlineLearning": online_learning,
             "dailyReport": self.daily_report(),
         }
 
@@ -159,7 +162,7 @@ class AutoTraderEngine:
             "closedPaperTrades": [trade.to_dict() for trade in list(self.closed_paper)[-25:]],
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],
             "replay": {"storedSnapshots": len(self.replay_buffer)},
-            "onlineLearning": self.learning_status(),
+            "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
         }
 
