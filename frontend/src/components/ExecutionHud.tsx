@@ -22,6 +22,15 @@ export function ExecutionHud({ snapshot }: ExecutionHudProps) {
         <MetricCard label="Trail State" value={snapshot.trailingStopState} helper="ATR/orderflow managed" tone={snapshot.risk.safeMode ? 'rose' : 'cyan'} />
       </div>
       <div className="xl:col-span-7 grid gap-4 lg:grid-cols-2">
+        {snapshot.entryModel && (
+          <Card title="Retest Entry Model" eyebrow="ORB / breakout retest confirmation">
+            <div className={`rounded-2xl border p-4 ${snapshot.entryModel.retestConfirmed ? 'border-emerald-300/30 bg-emerald-300/10' : snapshot.entryModel.failedBreakout ? 'border-rose-300/30 bg-rose-300/10' : 'border-amber-300/30 bg-amber-300/10'}`}>
+              <p className="text-xl font-black text-white">{snapshot.entryModel.state.replaceAll('_', ' ')}</p>
+              <p className="mt-2 text-sm text-slate-300">OR High {snapshot.entryModel.openingRangeHigh} | OR Low {snapshot.entryModel.openingRangeLow}</p>
+              <p className="mt-1 text-xs text-slate-400">Retest {snapshot.entryModel.retestConfirmed ? 'confirmed' : 'waiting'} | Failed breakout {snapshot.entryModel.failedBreakout ? 'YES' : 'NO'}</p>
+            </div>
+          </Card>
+        )}
         {snapshot.pressureMode && (
           <Card title="Pressure Mode Engine" eyebrow="Under-pressure protection">
             <div className={`rounded-2xl border p-4 ${snapshot.pressureMode.level === 'CRITICAL' ? 'border-rose-300/30 bg-rose-300/10' : snapshot.pressureMode.level === 'ELEVATED' ? 'border-amber-300/30 bg-amber-300/10' : 'border-emerald-300/30 bg-emerald-300/10'}`}>

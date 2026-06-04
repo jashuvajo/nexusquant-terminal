@@ -61,7 +61,7 @@ class PreviousTick:
 class RealTimeMarketEngine:
     """Builds terminal snapshots only from real Upstox responses."""
 
-    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms", "_pressure_mode", "_precision_entry_checklist", "_adaptive_exit_engine", "_no_trade_zones", "_tqs_breakdown", "_production_readiness", "_atr_points")
+    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms", "_pressure_mode", "_precision_entry_checklist", "_adaptive_exit_engine", "_no_trade_zones", "_tqs_breakdown", "_production_readiness", "_atr_points", "_entry_model_state")
 
     def validate_runtime(self) -> dict[str, Any]:
         missing = [name for name in self.REQUIRED_HELPERS if not hasattr(self, name)]
@@ -144,6 +144,7 @@ class RealTimeMarketEngine:
         orderflow = self._orderflow(selected_symbol, spot, call_md, put_md, option_bias, volume_state)
         regime = self._regime(session.phase, momentum, volume_score, spread_quality)
         chop_filter = self._chop_filter(momentum, orderflow, spread_quality, volume_score, regime)
+        entry_model = self._entry_model_state(candles_list, spot, market_profile, option_bias)
         delta_score = round(clamp(50 + orderflow["deltaVelocity"] / 2 + abs(greeks["delta"]) * 30))
         regime_score = 85 if regime == "TREND_EXPANSION" else 72 if regime == "RANGE_ABSORPTION" else 55
 
@@ -179,7 +180,7 @@ class RealTimeMarketEngine:
         )
         upstox_latency = self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders)
         tqs_breakdown = self._tqs_breakdown(ai_matrix)
-        no_trade_zones = self._no_trade_zones(session.phase, adaptive_risk, regime, chop_filter, spread_quality, volume_state, orderflow, upstox_latency, self._drawdown_pct(portfolio))
+        no_trade_zones = self._no_trade_zones(session.phase, adaptive_risk, regime, chop_filter, spread_quality, volume_state, orderflow, upstox_latency, self._drawdown_pct(portfolio), entry_model)
         pressure_mode = self._pressure_mode(session.phase, orderflow, spread_quality, volume_state, upstox_latency, risk_decision.safe_mode, no_trade_zones)
 
         selected_side = "CALL" if option_bias["direction"] == "BULLISH" else "PUT"
@@ -209,6 +210,7 @@ class RealTimeMarketEngine:
             chop_filter=chop_filter,
             no_trade_zones=no_trade_zones,
             pressure_mode=pressure_mode,
+            entry_model=entry_model,
         )
         execution_allowed = bool(
             self.settings.enable_live_trading
@@ -243,6 +245,7 @@ class RealTimeMarketEngine:
             trading_capital=float(trading_capital or 0),
             chop_filter=chop_filter,
             volume_state=volume_state,
+            entry_model=entry_model,
         )
 
         return {
@@ -264,6 +267,7 @@ class RealTimeMarketEngine:
             "adaptiveExit": adaptive_exit,
             "noTradeZones": no_trade_zones,
             "tqsBreakdown": tqs_breakdown,
+            "entryModel": entry_model,
             "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
@@ -786,6 +790,49 @@ class RealTimeMarketEngine:
         latencies = [as_float(payload.get("nexusquant_latency_ms")) for payload in payloads if isinstance(payload, dict) and payload.get("nexusquant_latency_ms") is not None]
         return round(mean(latencies), 2) if latencies else 0.0
 
+    def _entry_model_state(self, candles: list[dict[str, Any]], spot: float, profile: dict[str, Any], bias: dict[str, Any]) -> dict[str, Any]:
+        if len(candles) < 8:
+            return {"model": "ORB_RETEST", "state": "INSUFFICIENT_CANDLES", "retestConfirmed": False, "failedBreakout": False}
+        opening = candles[:15]
+        recent = candles[-6:]
+        opening_high = max(candle["high"] for candle in opening)
+        opening_low = min(candle["low"] for candle in opening)
+        vah = profile.get("vah", opening_high)
+        val = profile.get("val", opening_low)
+        last_close = candles[-1]["close"]
+        prior = candles[-2]
+        direction = bias.get("direction")
+        bullish_breakout = last_close > max(opening_high, vah)
+        bearish_breakout = last_close < min(opening_low, val)
+        retest_confirmed = False
+        failed_breakout = False
+        state = "NO_BREAKOUT"
+        if bullish_breakout:
+            touched = any(candle["low"] <= max(opening_high, vah) for candle in recent[:-1])
+            held = last_close > max(opening_high, vah) and prior["close"] >= max(opening_high, vah)
+            retest_confirmed = touched and held and direction == "BULLISH"
+            failed_breakout = any(candle["close"] < max(opening_high, vah) for candle in recent[-3:])
+            state = "BULLISH_RETEST_CONFIRMED" if retest_confirmed else "BULLISH_BREAKOUT_WAIT_RETEST"
+        elif bearish_breakout:
+            touched = any(candle["high"] >= min(opening_low, val) for candle in recent[:-1])
+            held = last_close < min(opening_low, val) and prior["close"] <= min(opening_low, val)
+            retest_confirmed = touched and held and direction == "BEARISH"
+            failed_breakout = any(candle["close"] > min(opening_low, val) for candle in recent[-3:])
+            state = "BEARISH_RETEST_CONFIRMED" if retest_confirmed else "BEARISH_BREAKOUT_WAIT_RETEST"
+        else:
+            failed_breakout = (max(candle["high"] for candle in recent) > opening_high and last_close < opening_high) or (min(candle["low"] for candle in recent) < opening_low and last_close > opening_low)
+            state = "FAILED_BREAKOUT" if failed_breakout else "INSIDE_RANGE"
+        return {
+            "model": "ORB_RETEST",
+            "state": state,
+            "openingRangeHigh": round(opening_high, 2),
+            "openingRangeLow": round(opening_low, 2),
+            "spot": round(spot, 2),
+            "retestConfirmed": retest_confirmed,
+            "failedBreakout": failed_breakout,
+            "direction": direction,
+        }
+
     def _pressure_mode(
         self,
         phase: MarketPhase,
@@ -840,6 +887,7 @@ class RealTimeMarketEngine:
         chop_filter: dict[str, Any],
         no_trade_zones: dict[str, Any],
         pressure_mode: dict[str, Any],
+        entry_model: dict[str, Any],
     ) -> dict[str, Any]:
         checks = [
             {"name": "TQS above institutional floor", "passed": tqs >= max(threshold, 68), "value": tqs, "required": max(threshold, 68), "critical": True},
@@ -854,6 +902,8 @@ class RealTimeMarketEngine:
             {"name": "Pressure not critical", "passed": pressure_mode.get("level") != "CRITICAL", "value": pressure_mode.get("level"), "required": "NORMAL/ELEVATED", "critical": True},
             {"name": "Option bias aligned", "passed": (selected_side == "CALL" and option_bias.get("direction") == "BULLISH") or (selected_side == "PUT" and option_bias.get("direction") == "BEARISH"), "value": option_bias.get("direction"), "required": selected_side, "critical": False},
             {"name": "Profile acceptance", "passed": spot >= market_profile.get("val", spot) and spot <= market_profile.get("vah", spot), "value": spot, "required": f"{market_profile.get('val')} - {market_profile.get('vah')}", "critical": False},
+            {"name": "Retest confirmation", "passed": bool(entry_model.get("retestConfirmed")), "value": entry_model.get("state"), "required": "breakout-retest-hold", "critical": False},
+            {"name": "No failed breakout", "passed": not bool(entry_model.get("failedBreakout")), "value": entry_model.get("failedBreakout"), "required": False, "critical": True},
         ]
         critical_failed = [check for check in checks if check["critical"] and not check["passed"]]
         passed_count = sum(1 for check in checks if check["passed"])
@@ -895,6 +945,7 @@ class RealTimeMarketEngine:
         orderflow: dict[str, Any],
         upstox_latency: float,
         drawdown_pct: float,
+        entry_model: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         zones: list[dict[str, Any]] = []
         if phase != MarketPhase.LIVE_MARKET:
@@ -915,6 +966,8 @@ class RealTimeMarketEngine:
             zones.append({"name": "Daily drawdown", "severity": "hard", "reason": f"{drawdown_pct}%"})
         if orderflow.get("sweepDetection", 0) < 5 and orderflow.get("breakoutVelocity", 0) < 10:
             zones.append({"name": "No sweep / weak breakout", "severity": "soft", "reason": "momentum quality weak"})
+        if entry_model and entry_model.get("failedBreakout"):
+            zones.append({"name": "Failed breakout", "severity": "hard", "reason": "breakout returned inside opening/value range"})
         hard = [zone for zone in zones if zone["severity"] == "hard"]
         return {"blocked": bool(hard), "activeZones": zones, "hardBlocks": hard}
 
@@ -1007,6 +1060,7 @@ class RealTimeMarketEngine:
         trading_capital: float,
         chop_filter: dict[str, Any],
         volume_state: dict[str, Any],
+        entry_model: dict[str, Any],
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
@@ -1030,6 +1084,7 @@ class RealTimeMarketEngine:
                 "chopReasons": chop_filter.get("reasons", []),
                 "volumeSource": volume_state.get("source"),
                 "effectiveVolume": volume_state.get("effectiveVolume", 0),
+                "entryModel": entry_model,
                 "tqs": tqs,
                 "confidence": confidence,
                 "bias": option_bias.get("direction"),

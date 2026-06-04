@@ -919,3 +919,23 @@ The optimizer now returns:
 - `recommendedProfiles.runnerProfile`
 - `recommendedProfiles.highWinScalpProfile`
 - `recommendedProfiles.lowDrawdownProfile`
+
+
+## Retest confirmation entry model
+
+NexusQuant now evaluates:
+
+- breakout-now
+- breakout → retest → hold
+- opening-range breakout/retest
+- failed-breakout rejection
+
+The optimizer includes `entry_model` in parameters:
+
+```text
+breakout
+retest
+orb_retest
+```
+
+Use retest/ORB profiles to reduce fake breakouts and improve win rate.

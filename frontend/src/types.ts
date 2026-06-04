@@ -264,6 +264,8 @@ export interface SuggestedTrade {
   levels: { poc: number; vah: number; val: number };
 }
 
+export interface EntryModelState { model: string; state: string; openingRangeHigh?: number; openingRangeLow?: number; spot?: number; retestConfirmed: boolean; failedBreakout: boolean; direction?: string; }
+
 export interface PressureModeState {
   level: 'NORMAL' | 'ELEVATED' | 'CRITICAL' | string;
   triggers: string[];
@@ -358,6 +360,7 @@ export interface TerminalSnapshot {
   tradingCapital?: { tradingCapital: number; reason?: string; updatedAt?: string };
   tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
   qualityFilters?: QualityFilters;
+  entryModel?: EntryModelState;
   pressureMode?: PressureModeState;
   precisionChecklist?: PrecisionChecklistState;
   adaptiveExit?: AdaptiveExitState;

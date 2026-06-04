@@ -26,6 +26,7 @@ class StrategyParams:
     target_points: float
     stop_points: float
     trail_atr: float
+    entry_model: str = "breakout"
 
 
 class StrategyOptimizer:
@@ -125,6 +126,7 @@ class StrategyOptimizer:
             [4.0, 5.0, 6.0, 8.0],
             [1.5, 2.0, 2.5, 3.0],
             [0.35, 0.5, 0.75],
+            ["breakout", "retest", "orb_retest"],
         )
         params = [StrategyParams(*item) for item in raw]
         # Deterministic spread across grid to keep endpoint bounded.
@@ -152,13 +154,19 @@ class StrategyOptimizer:
             move = abs(current["close"] - previous_close)
             breakout_strength = move / atr
             side = None
-            if current["close"] > high and breakout_strength >= params.breakout_atr:
+            bullish_breakout = current["close"] > high and breakout_strength >= params.breakout_atr
+            bearish_breakout = current["close"] < low and breakout_strength >= params.breakout_atr
+            if bullish_breakout:
                 side = "CALL"
-            elif current["close"] < low and breakout_strength >= params.breakout_atr:
+            elif bearish_breakout:
                 side = "PUT"
             if not side or not volume_ok:
                 continue
-            tqs = max(35, min(95, 58 + breakout_strength * 10 + 15 + (5 if params.volume_multiplier >= 1.5 else 0)))
+            if params.entry_model in {"retest", "orb_retest"} and not self._retest_confirmed(candles, index, side, high, low):
+                continue
+            if self._failed_breakout(candles, index, high, low):
+                continue
+            tqs = max(35, min(95, 58 + breakout_strength * 10 + 15 + (5 if params.volume_multiplier >= 1.5 else 0) + (8 if params.entry_model != "breakout" else 0)))
             if tqs < params.min_tqs:
                 continue
             trade = self._simulate_exit(current["close"], side, future, atr, params)
