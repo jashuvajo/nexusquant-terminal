@@ -134,6 +134,7 @@ class AutoTraderEngine:
         exits = self._update_open_paper(snapshots)
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
+        profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0))
         return {
             "paperTrading": self.settings.paper_trading,
             "liveTradingEnabled": self.settings.enable_live_trading,
@@ -151,6 +152,7 @@ class AutoTraderEngine:
             },
             "slippageModel": self._slippage_summary(candidates),
             "positionSizing": self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
+            "profitLock": profit_lock,
             "onlineLearning": online_learning,
             "dailyReport": self.daily_report(),
         }
@@ -162,6 +164,7 @@ class AutoTraderEngine:
             "closedPaperTrades": [trade.to_dict() for trade in list(self.closed_paper)[-25:]],
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],
             "replay": {"storedSnapshots": len(self.replay_buffer)},
+            "profitLock": self.profit_lock_status(),
             "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
         }
@@ -179,6 +182,35 @@ class AutoTraderEngine:
 
     def replay(self, limit: int = 250) -> dict[str, Any]:
         return {"snapshots": list(self.replay_buffer)[-limit:], "count": min(limit, len(self.replay_buffer))}
+
+    def profit_lock_status(self, capital: float | None = None) -> dict[str, Any]:
+        capital = float(capital or 0)
+        report = self.daily_report()
+        net = float(report.get("grossProfit", 0)) - float(report.get("grossLoss", 0))
+        tiers = [
+            {"name": "fallback", "pct": self.settings.profit_target_fallback_pct},
+            {"name": "secondary", "pct": self.settings.profit_target_secondary_pct},
+            {"name": "primary", "pct": self.settings.profit_target_primary_pct},
+        ]
+        achieved = []
+        for tier in tiers:
+            target_amount = capital * float(tier["pct"]) / 100 if capital else 0
+            if capital and net >= target_amount:
+                achieved.append({**tier, "amount": round(target_amount, 2)})
+        active = achieved[-1] if achieved else None
+        locked_profit = float(active["amount"]) * (self.settings.profit_lock_retain_pct / 100) if active else 0
+        giveback = max(0, net - locked_profit) if active else 0
+        block_new = bool(active and net <= locked_profit)
+        return {
+            "capital": capital,
+            "netPnl": round(net, 2),
+            "tiers": [{**tier, "amount": round(capital * float(tier["pct"]) / 100, 2) if capital else 0} for tier in tiers],
+            "activeTier": active,
+            "lockedProfit": round(locked_profit, 2),
+            "givebackAvailable": round(giveback, 2),
+            "blockNewTrades": block_new,
+            "message": "Primary profit locked; only trade from giveback buffer" if active and active["name"] == "primary" else "Profit target not locked yet" if not active else f"{active['name']} profit tier locked",
+        }
 
     def daily_report(self) -> dict[str, Any]:
         trades = list(self.closed_paper)

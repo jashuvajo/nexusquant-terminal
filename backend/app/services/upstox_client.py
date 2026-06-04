@@ -120,6 +120,24 @@ class UpstoxClient:
             params={"instrument_key": instrument_key, "expiry_date": expiry_date},
         )
 
+
+    async def historical_candles(
+        self,
+        instrument_key: str,
+        unit: str = "minutes",
+        interval: int = 1,
+        to_date: str | None = None,
+        from_date: str | None = None,
+    ) -> dict[str, Any]:
+        encoded = quote(instrument_key, safe="")
+        if to_date and from_date:
+            url = f"{UPSTOX_API_BASE}/v3/historical-candle/{encoded}/{unit}/{interval}/{to_date}/{from_date}"
+        elif to_date:
+            url = f"{UPSTOX_API_BASE}/v3/historical-candle/{encoded}/{unit}/{interval}/{to_date}"
+        else:
+            url = f"{UPSTOX_API_BASE}/v3/historical-candle/intraday/{encoded}/{unit}/{interval}"
+        return await self._request("GET", url)
+
     async def intraday_candles(self, instrument_key: str, unit: str = "minutes", interval: int = 1) -> dict[str, Any]:
         encoded = quote(instrument_key, safe="")
         return await self._request(

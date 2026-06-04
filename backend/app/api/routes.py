@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.auto_trader import AutoTraderEngine
 from app.services.ai_learning import ContinuousAILearner
+from app.services.historical_trainer import HistoricalTrainer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
@@ -79,6 +80,14 @@ def get_auto_trader(
     return AutoTraderEngine(settings, control, learner)
 
 
+def get_historical_trainer(
+    settings: Settings = Depends(get_settings),
+    client: UpstoxClient = Depends(get_upstox),
+    learner: ContinuousAILearner = Depends(get_ai_learner),
+) -> HistoricalTrainer:
+    return HistoricalTrainer(settings, client, learner)
+
+
 def get_market_engine(
     settings: Settings = Depends(get_settings),
     client: UpstoxClient = Depends(get_upstox),
@@ -135,6 +144,7 @@ async def deployment_status(
             "/api/ai-learning/status",
             "/api/ai-learning/export",
             "/api/ai-learning/reset",
+            "/api/ai-learning/train-historical",
         ],
     }
 
@@ -307,6 +317,7 @@ async def place_scalp_order(
     settings: Settings = Depends(get_settings),
     client: UpstoxClient = Depends(get_upstox),
     control: TradingControl = Depends(get_trading_control),
+    auto_engine: AutoTraderEngine = Depends(get_auto_trader),
 ) -> dict:
     session = current_session_state()
     control_status = await control.status()
@@ -323,6 +334,9 @@ async def place_scalp_order(
     estimated_value = request.quantity * request.price if request.price > 0 else 0
     if trading_capital and estimated_value and estimated_value > trading_capital:
         raise HTTPException(status_code=403, detail=f"Order value {estimated_value} exceeds configured trading capital {trading_capital}.")
+    profit_lock = auto_engine.profit_lock_status(float(trading_capital or 0))
+    if profit_lock.get("blockNewTrades"):
+        raise HTTPException(status_code=423, detail=f"Profit lock active: {profit_lock.get('message')}")
 
     order = {
         "quantity": request.quantity,
@@ -343,6 +357,31 @@ async def place_scalp_order(
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"submitted": True, "session": session.label, "order": order, "upstox": response}
+
+
+@router.post("/ai-learning/train-historical")
+async def ai_learning_train_historical(
+    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    target_trades: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    try:
+        return await trainer.train(symbol, target_trades, from_date, to_date)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/ai-learning/train-historical")
+async def ai_learning_train_historical_get(
+    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    target_trades: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    return await ai_learning_train_historical(symbol, target_trades, from_date, to_date, trainer)
 
 
 @router.get("/ai-learning/status")
@@ -368,6 +407,12 @@ async def ai_learning_reset_get(learner: ContinuousAILearner = Depends(get_ai_le
 @router.get("/auto-trader/status")
 async def auto_trader_status(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     return engine.status()
+
+
+@router.get("/auto-trader/profit-lock")
+async def auto_trader_profit_lock(engine: AutoTraderEngine = Depends(get_auto_trader), control: TradingControl = Depends(get_trading_control)) -> dict:
+    capital = await control.capital_status()
+    return engine.profit_lock_status(capital.get("tradingCapital", 0))
 
 
 @router.get("/auto-trader/replay")

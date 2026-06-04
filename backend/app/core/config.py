@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     daily_drawdown_pct: float = 3.0
     trading_capital_default: float = 0.0
     min_required_move_points: float = 5.0
+    historical_training_target_trades: int = 1000
+    profit_lock_retain_pct: float = 100.0
+    profit_target_fallback_pct: float = 11.0
+    profit_target_secondary_pct: float = 22.0
+    profit_target_primary_pct: float = 33.0
     max_paper_trade_seconds: int = 180
     paper_stop_points: float = 3.0
     paper_target_points: float = 5.0

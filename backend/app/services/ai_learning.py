@@ -156,6 +156,39 @@ class ContinuousAILearner:
         await self.persist()
         return self.status_from_state(state)
 
+
+    async def train_from_historical_samples(self, samples: list[dict[str, Any]]) -> dict[str, Any]:
+        state = await self.load()
+        if not samples:
+            return {**self.status_from_state(state), "historicalTraining": {"samplesAdded": 0, "message": "No samples supplied"}}
+        wins = [sample for sample in samples if float(sample.get("pnl", 0)) > 0]
+        losses = [sample for sample in samples if float(sample.get("pnl", 0)) < 0]
+        gross_profit = sum(float(sample.get("pnl", 0)) for sample in wins)
+        gross_loss = abs(sum(float(sample.get("pnl", 0)) for sample in losses))
+        avg_tqs = sum(float(sample.get("tqs", 0)) for sample in samples) / len(samples)
+        chop_losses = sum(1 for sample in losses if sample.get("regime") in {"RANGE_ABSORPTION", "REVERSAL_RISK"})
+        trend_wins = sum(1 for sample in wins if sample.get("regime") == "TREND_EXPANSION")
+
+        state["samples"] += len(samples)
+        state["paperSamples"] += len(samples)
+        state["wins"] += len(wins)
+        state["losses"] += len(losses)
+        state["grossProfit"] += gross_profit
+        state["grossLoss"] += gross_loss
+        total_loss = float(state["grossLoss"])
+        state["profitFactor"] = round(float(state["grossProfit"]) / total_loss, 3) if total_loss else round(float(state["grossProfit"]), 3)
+        calibration = state["calibration"]
+        calibration["tqsBias"] = round(max(-10, min(10, float(calibration.get("tqsBias", 0)) + (avg_tqs - 70) * 0.002)), 4)
+        calibration["chopPenalty"] = round(max(0, min(10, float(calibration.get("chopPenalty", 0)) + chop_losses * 0.01)), 4)
+        calibration["volumeReward"] = round(max(0, min(10, float(calibration.get("volumeReward", 0)) + trend_wins * 0.005)), 4)
+        state["learningScore"] = round(max(0, min(100, float(state["learningScore"]) * 0.9 + avg_tqs * 0.1 + (len(wins) - len(losses)) * 0.01)), 3)
+        state["lastFeatures"] = {"historicalSamples": len(samples), "avgTqs": round(avg_tqs, 2), "wins": len(wins), "losses": len(losses)}
+        state["lastOutcome"] = "historical_training"
+        state["lastUpdatedAt"] = datetime.now(timezone.utc).isoformat()
+        ContinuousAILearner._state = state
+        await self.persist()
+        return {**self.status_from_state(state), "historicalTraining": {"samplesAdded": len(samples), "wins": len(wins), "losses": len(losses), "grossProfit": round(gross_profit, 2), "grossLoss": round(gross_loss, 2)}}
+
     def status_from_state(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
         state = state or ContinuousAILearner._state
         return {

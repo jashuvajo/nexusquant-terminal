@@ -660,3 +660,48 @@ AI_LEARNING_ENABLED=true
 ```
 
 Use `/api/ai-learning/export` before resetting if you want to inspect current calibration state.
+
+
+## Historical 1000-trade AI training
+
+After Upstox token is available, train from real historical index candles:
+
+```text
+/api/ai-learning/train-historical?symbol=NIFTY&target_trades=1000
+/api/ai-learning/train-historical?symbol=SENSEX&target_trades=1000
+```
+
+Optional date range:
+
+```text
+/api/ai-learning/train-historical?symbol=NIFTY&target_trades=1000&from_date=2025-01-01&to_date=2025-06-01
+```
+
+This endpoint:
+
+- fetches real Upstox historical candles
+- generates deterministic breakout/momentum scalp samples
+- labels sample outcomes from future candle movement
+- updates the persistent continuous AI learner
+
+If Upstox returns fewer candles/samples than requested, the response shows `generatedTrades` and `enoughSamples=false`. No fake historical trades are created.
+
+
+## Profit target lock
+
+Configure target tiers against your trading capital:
+
+```text
+PROFIT_TARGET_PRIMARY_PCT=33
+PROFIT_TARGET_SECONDARY_PCT=22
+PROFIT_TARGET_FALLBACK_PCT=11
+PROFIT_LOCK_RETAIN_PCT=100
+```
+
+When a tier is achieved in paper/live tracked outcomes, NexusQuant reports the locked profit and blocks new live orders if the locked profit would be at risk. This is a risk-control guard, not a profit guarantee.
+
+Endpoint:
+
+```text
+/api/auto-trader/profit-lock
+```

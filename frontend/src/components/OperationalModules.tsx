@@ -379,6 +379,8 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
             <MetricCard label="Win Rate" value={`${auto.dailyReport.winRate}%`} helper={`${auto.dailyReport.wins}W / ${auto.dailyReport.losses}L`} tone="emerald" />
             <MetricCard label="Profit Factor" value={auto.dailyReport.profitFactor} helper="Paper outcomes" tone="amber" />
             <MetricCard label="Max DD" value={formatCurrency(auto.dailyReport.maxDrawdown)} helper="Paper drawdown" tone="rose" />
+            <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No profit tier locked'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'emerald'} />
+            <MetricCard label="Giveback Buffer" value={formatCurrency(auto.profitLock?.givebackAvailable ?? 0)} helper={`Locked ${formatCurrency(auto.profitLock?.lockedProfit ?? 0)}`} tone="violet" />
           </div>
           <div className="mt-5 grid gap-4 xl:grid-cols-2">
             <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
@@ -406,9 +408,10 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
             </div>
           </div>
           <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
-            <p className="font-bold uppercase tracking-[0.2em]">Online learning every tick</p>
+            <p className="font-bold uppercase tracking-[0.2em]">Pretrained + continuous AI learning</p>
             <p className="mt-2">{auto.onlineLearning.note}</p>
-            <p className="mt-2 text-xs text-amber-200/80">Pretrained: {auto.onlineLearning.pretrained ? 'YES' : 'NO'} | Paper samples {auto.onlineLearning.paperSamples ?? 0} | Live samples {auto.onlineLearning.liveSamples ?? 0} | PF {auto.onlineLearning.profitFactor ?? 0}</p>
+            <p className="mt-2 text-xs text-amber-200/80">Pretrained: {auto.onlineLearning.pretrained ? 'YES' : 'NO'} | Prior {auto.onlineLearning.priorVersion ?? 'n/a'} | Paper samples {auto.onlineLearning.paperSamples ?? 0} | Live samples {auto.onlineLearning.liveSamples ?? 0} | PF {auto.onlineLearning.profitFactor ?? 0}</p>
+            <p className="mt-2 text-xs text-slate-300">Historical trainer endpoint: <span className="font-mono">/api/ai-learning/train-historical?symbol=NIFTY&amp;target_trades=1000</span></p>
           </div>
         </>
       )}
