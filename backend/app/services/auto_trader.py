@@ -163,6 +163,17 @@ class AutoTraderEngine:
             "dailyReport": self.daily_report(),
         }
 
+
+    def reset(self) -> dict[str, Any]:
+        self.replay_buffer.clear()
+        self.open_paper.clear()
+        self.closed_paper.clear()
+        self.lifecycle_events.clear()
+        AutoTraderEngine._shared_learning_samples = 0
+        AutoTraderEngine._shared_learning_score = 50.0
+        AutoTraderEngine._shared_last_learning_update = None
+        return {"reset": True, "status": self.status()}
+
     def replay(self, limit: int = 250) -> dict[str, Any]:
         return {"snapshots": list(self.replay_buffer)[-limit:], "count": min(limit, len(self.replay_buffer))}
 

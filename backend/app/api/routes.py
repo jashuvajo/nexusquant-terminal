@@ -120,6 +120,9 @@ async def deployment_status(
             "/api/upstox/account-summary",
             "/api/market/expiries/NIFTY",
             "/api/market/snapshot/NIFTY",
+            "/api/market/snapshots",
+            "/api/auto-trader/status",
+            "/api/auto-trader/reset",
         ],
     }
 
@@ -338,6 +341,16 @@ async def auto_trader_status(engine: AutoTraderEngine = Depends(get_auto_trader)
 @router.get("/auto-trader/replay")
 async def auto_trader_replay(limit: int = 250, engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     return engine.replay(limit)
+
+
+@router.post("/auto-trader/reset")
+async def auto_trader_reset(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.reset()
+
+
+@router.get("/auto-trader/reset")
+async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.reset()
 
 
 @router.get("/auto-trader/daily-report")

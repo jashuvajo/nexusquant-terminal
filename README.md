@@ -548,3 +548,43 @@ Useful endpoints:
 ```
 
 The online learning tracker updates every snapshot tick from real-data-derived signals and paper outcomes. It is an online calibration layer, not a fully persisted offline ML retrain yet.
+
+
+## Final production health checklist
+
+After each Railway deploy, verify:
+
+```text
+/api/deployment/status
+/api/upstox/token/status
+/api/execution/status
+/api/capital
+/api/auto-trader/status
+/api/market/snapshots
+```
+
+If `hasToken=false`, run:
+
+```text
+/api/upstox/login-url
+```
+
+If paper/replay state looks stale before a new test session, reset it:
+
+```text
+POST /api/auto-trader/reset
+```
+
+or open in browser:
+
+```text
+/api/auto-trader/reset
+```
+
+A healthy market-data run requires:
+
+- `upstoxTokenPresent=true`
+- `runtimeValidation.ok=true`
+- `/api/market/snapshots` returning both NIFTY and SENSEX or a clear per-symbol Upstox error
+- STOP state intentionally set
+- trading capital configured before sizing tests
