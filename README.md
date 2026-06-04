@@ -766,3 +766,23 @@ VITE_POLL_MS=3000
 ```
 
 `VITE_WS_URL` can remain set, but the current frontend stream uses HTTP polling for stability.
+
+
+## WebSocket primary with polling fallback
+
+For production scalping telemetry, frontend uses WebSocket as primary transport and sends client heartbeats. If WebSocket repeatedly fails, it falls back to HTTP polling.
+
+Vercel variables:
+
+```text
+VITE_STREAM_MODE=websocket
+VITE_WS_URL=wss://nexusquant-api-production.up.railway.app/ws/market
+VITE_WS_CLIENT_HEARTBEAT_MS=5000
+VITE_POLL_MS=3000
+```
+
+Options:
+
+- `VITE_STREAM_MODE=websocket`: primary WebSocket, fallback after repeated failures
+- `VITE_STREAM_MODE=polling`: force HTTP polling only
+- `VITE_STREAM_MODE=hybrid`: try WebSocket once, fallback quickly

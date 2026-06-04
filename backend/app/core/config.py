@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     ai_learning_enabled: bool = True
     paper_trading: bool = True
     market_poll_seconds: float = 1.0
+    websocket_heartbeat_seconds: float = 10.0
+    websocket_send_interval_seconds: float = 1.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

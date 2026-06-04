@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MarketSymbol, StreamStatus, TerminalSnapshot } from '../types';
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const wsUrl = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws/market';
+const streamMode = (import.meta.env.VITE_STREAM_MODE ?? 'websocket') as 'websocket' | 'polling' | 'hybrid';
 const pollMs = Number(import.meta.env.VITE_POLL_MS ?? 3000);
+const clientHeartbeatMs = Number(import.meta.env.VITE_WS_CLIENT_HEARTBEAT_MS ?? 5000);
+const reconnectDelays = [1000, 2000, 4000, 8000, 10000];
 
 interface StreamIssue {
   status: string;
@@ -23,17 +27,38 @@ export function useMarketStream() {
   const [snapshots, setSnapshots] = useState<Partial<Record<MarketSymbol, TerminalSnapshot>>>({});
   const [status, setStatus] = useState<StreamStatus>('connecting');
   const [issue, setIssue] = useState<StreamIssue | null>(null);
+  const reconnectAttempts = useRef(0);
+  const wsFailures = useRef(0);
+  const socketIdRef = useRef(0);
 
   useEffect(() => {
     let disposed = false;
-    let timer: number | undefined;
-    let inFlight = false;
-    let failures = 0;
+    let socket: WebSocket | undefined;
+    let reconnectTimer: number | undefined;
+    let heartbeatTimer: number | undefined;
+    let pollingTimer: number | undefined;
+    let pollingInFlight = false;
 
-    const handlePayload = (payload: Record<string, unknown>) => {
-      const incoming = (payload.snapshots ?? {}) as Partial<Record<MarketSymbol, TerminalSnapshot>>;
+    const applyPayload = (payload: Record<string, unknown>) => {
+      if (payload.type === 'status') {
+        const statusValue = payload.status as string | undefined;
+        if (statusValue === 'CONNECTED' || statusValue === 'HEARTBEAT') {
+          setStatus('live');
+          setIssue(null);
+          return;
+        }
+        setStatus('status');
+        setIssue({ status: statusValue ?? 'STATUS', message: (payload.message as string | undefined) ?? 'Waiting for real Upstox data.' });
+        return;
+      }
+
+      const incoming = payload.type === 'multi_snapshot'
+        ? (payload.snapshots ?? {}) as Partial<Record<MarketSymbol, TerminalSnapshot>>
+        : payload.type === 'snapshot' || payload.tradeQualityScore !== undefined
+          ? { [((payload as unknown as Partial<TerminalSnapshot>).symbol ?? 'NIFTY')]: payload as unknown as TerminalSnapshot } as Partial<Record<MarketSymbol, TerminalSnapshot>>
+          : {};
+
       const verifiedEntries = Object.entries(incoming).filter(([, item]) => isVerifiedSnapshot(item)) as Array<[MarketSymbol, TerminalSnapshot]>;
-
       if (verifiedEntries.length === 0) {
         setSnapshot(null);
         setSnapshots({});
@@ -47,57 +72,116 @@ export function useMarketStream() {
       }
 
       const nextSnapshots = Object.fromEntries(verifiedEntries) as Partial<Record<MarketSymbol, TerminalSnapshot>>;
-      setSnapshots(nextSnapshots);
       const displaySymbol = payload.displaySymbol as MarketSymbol | undefined;
+      setSnapshots(nextSnapshots);
       setSnapshot((displaySymbol && nextSnapshots[displaySymbol]) || nextSnapshots.NIFTY || nextSnapshots.SENSEX || verifiedEntries[0][1]);
       setStatus('live');
       setIssue(null);
     };
 
-    const poll = async () => {
-      if (disposed || inFlight) return;
-      inFlight = true;
+    const startPolling = () => {
+      if (disposed) return;
       try {
-        const response = await fetch(`${apiUrl}/api/market/snapshots`, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          failures += 1;
-          setStatus('status');
-          setIssue({
-            status: payload.detail ? 'UPSTOX_DATA_ERROR' : 'POLLING_ERROR',
-            message: typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail ?? payload),
-          });
+        socket?.close();
+      } catch {
+        // Ignore stale socket close.
+      }
+      setStatus('connecting');
+      setIssue({ status: 'HTTP_POLLING_FALLBACK', message: 'Using HTTP polling fallback for stable Railway/Vercel connectivity.' });
+
+      const poll = async () => {
+        if (disposed || pollingInFlight) return;
+        pollingInFlight = true;
+        try {
+          const response = await fetch(`${apiUrl}/api/market/snapshots`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+          const payload = await response.json() as Record<string, unknown>;
+          if (!response.ok) {
+            setStatus('status');
+            setIssue({ status: 'UPSTOX_DATA_ERROR', message: typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail ?? payload) });
+          } else {
+            applyPayload(payload);
+          }
+        } catch (error) {
+          setStatus('connecting');
+          setIssue({ status: 'HTTP_POLL_RECONNECTING', message: `Polling failed: ${error instanceof Error ? error.message : String(error)}` });
+        } finally {
+          pollingInFlight = false;
+          if (!disposed) pollingTimer = window.setTimeout(poll, pollMs);
+        }
+      };
+      void poll();
+    };
+
+    const connectWebSocket = () => {
+      if (disposed) return;
+      const socketId = socketIdRef.current + 1;
+      socketIdRef.current = socketId;
+      try {
+        socket?.close();
+      } catch {
+        // Ignore stale socket close.
+      }
+
+      socket = new WebSocket(wsUrl);
+      socket.onopen = () => {
+        if (disposed || socketId !== socketIdRef.current) return;
+        reconnectAttempts.current = 0;
+        wsFailures.current = 0;
+        setStatus('live');
+        setIssue(null);
+        heartbeatTimer = window.setInterval(() => {
+          if (socket?.readyState === WebSocket.OPEN) socket.send('PING');
+        }, clientHeartbeatMs);
+      };
+      socket.onmessage = (event) => {
+        if (disposed || socketId !== socketIdRef.current) return;
+        try {
+          applyPayload(JSON.parse(event.data) as Record<string, unknown>);
+        } catch (error) {
+          setStatus('error');
+          setIssue({ status: 'INVALID_STREAM_PAYLOAD', message: String(error) });
+        }
+      };
+      socket.onerror = () => {
+        if (disposed || socketId !== socketIdRef.current) return;
+        try {
+          socket?.close();
+        } catch {
+          // onclose handles reconnect.
+        }
+      };
+      socket.onclose = () => {
+        if (disposed || socketId !== socketIdRef.current) return;
+        if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+        wsFailures.current += 1;
+        if (streamMode === 'hybrid' || wsFailures.current >= 5) {
+          startPolling();
           return;
         }
-        failures = 0;
-        handlePayload(payload as Record<string, unknown>);
-      } catch (error) {
-        failures += 1;
-        setStatus(failures > 3 ? 'error' : 'connecting');
-        setIssue({
-          status: 'HTTP_POLL_RECONNECTING',
-          message: `HTTP polling stream failed (${error instanceof Error ? error.message : String(error)}). Retrying every ${Math.round(pollMs / 1000)}s.`,
-        });
-      } finally {
-        inFlight = false;
-        if (!disposed) timer = window.setTimeout(poll, pollMs);
-      }
+        const delay = reconnectDelays[Math.min(reconnectAttempts.current, reconnectDelays.length - 1)];
+        reconnectAttempts.current += 1;
+        setStatus('connecting');
+        setIssue({ status: 'BACKEND_WS_RECONNECTING', message: `WebSocket closed. Reconnecting in ${Math.round(delay / 1000)}s.` });
+        reconnectTimer = window.setTimeout(connectWebSocket, delay);
+      };
     };
 
     window.setTimeout(() => {
       if (disposed) return;
-      setStatus('connecting');
-      setIssue({ status: 'HTTP_POLLING_STREAM', message: 'Using HTTP polling stream for stable Railway/Vercel connectivity. No WebSocket required.' });
-      void poll();
+      if (streamMode === 'polling') startPolling();
+      else connectWebSocket();
     }, 0);
 
     return () => {
       disposed = true;
-      if (timer) window.clearTimeout(timer);
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+      if (pollingTimer) window.clearTimeout(pollingTimer);
+      try {
+        socket?.close();
+      } catch {
+        // Ignore shutdown close.
+      }
     };
   }, []);
 

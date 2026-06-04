@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -225,25 +225,38 @@ async def build_multi_symbol_snapshot() -> dict:
     payload["eventJournal"] = await event_journal.recent(50)
     return payload
 
+async def receive_client_heartbeats(websocket: WebSocket) -> None:
+    while True:
+        message = await websocket.receive_text()
+        if message.upper() in {"CLOSE", "DISCONNECT"}:
+            break
+
+
 @app.websocket("/ws/market")
 async def market_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     ACTIVE_WS.inc()
-    await stream_status(websocket, "CONNECTED", "WebSocket connected. Waiting for real Upstox snapshots.", record_error=False)
-    heartbeat_counter = 0
+    receiver_task = asyncio.create_task(receive_client_heartbeats(websocket))
+    ticks_sent = 0
+    heartbeat_elapsed = 0.0
+    await stream_status(websocket, "CONNECTED", "WebSocket connected. Heartbeat active; streaming real Upstox snapshots when available.", record_error=False)
     try:
         while True:
+            if receiver_task.done():
+                break
             try:
                 snapshot = await build_multi_symbol_snapshot()
                 LATEST_TQS.set(snapshot["tradeQualityScore"])
                 SNAPSHOTS_STREAMED.inc(len(snapshot.get("snapshots", {})) or 1)
+                ticks_sent += 1
+                snapshot["streamMeta"] = {"transport": "websocket", "ticksSent": ticks_sent, "heartbeatSeconds": settings.websocket_heartbeat_seconds}
                 if websocket.client_state != WebSocketState.CONNECTED or websocket.application_state != WebSocketState.CONNECTED:
                     break
                 await websocket.send_json(snapshot)
-            except (WebSocketDisconnect, RuntimeError):
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
                 break
             except UpstoxAuthRequired as exc:
-                if not await stream_status(websocket, "UPSTOX_AUTH_REQUIRED", str(exc)):
+                if not await stream_status(websocket, "UPSTOX_AUTH_REQUIRED", str(exc), record_error=False):
                     break
             except MarketConfigurationError as exc:
                 if not await stream_status(websocket, "CONFIGURATION_REQUIRED", str(exc)):
@@ -254,12 +267,17 @@ async def market_stream(websocket: WebSocket) -> None:
             except Exception as exc:
                 if not await stream_status(websocket, "STREAM_ERROR", f"Unexpected stream error: {exc}"):
                     break
-            heartbeat_counter += 1
-            if heartbeat_counter % 15 == 0:
-                if not await stream_status(websocket, "HEARTBEAT", "Connection alive. Real-data stream is active or waiting for Upstox token.", record_error=False):
+
+            heartbeat_elapsed += settings.websocket_send_interval_seconds
+            if heartbeat_elapsed >= settings.websocket_heartbeat_seconds:
+                heartbeat_elapsed = 0.0
+                if not await stream_status(websocket, "HEARTBEAT", f"Heartbeat OK. Ticks processed: {ticks_sent}", record_error=False):
                     break
-            await asyncio.sleep(settings.market_poll_seconds)
+            await asyncio.sleep(settings.websocket_send_interval_seconds)
     except WebSocketDisconnect:
         pass
     finally:
+        receiver_task.cancel()
+        with suppress(Exception):
+            await receiver_task
         ACTIVE_WS.dec()
