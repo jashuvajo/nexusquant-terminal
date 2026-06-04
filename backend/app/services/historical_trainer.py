@@ -93,43 +93,85 @@ class HistoricalTrainer:
 
     def _generate_scalp_samples(self, symbol: str, candles: list[dict[str, Any]], target: int) -> list[dict[str, Any]]:
         samples: list[dict[str, Any]] = []
-        if len(candles) < 8:
+        if len(candles) < 20:
             return samples
-        for index in range(5, len(candles) - 3):
-            window = candles[index - 5:index]
+        for index in range(15, len(candles) - 6):
+            window = candles[index - 10:index]
             current = candles[index]
-            future = candles[index + 1:index + 4]
+            future = candles[index + 1:index + 7]
             high = max(candle["high"] for candle in window)
             low = min(candle["low"] for candle in window)
             avg_volume = sum(candle["volume"] for candle in window) / len(window) if window else 0
+            atr = sum(abs(candle["high"] - candle["low"]) for candle in window) / len(window)
+            previous_close = candles[index - 1]["close"]
+            move = abs(current["close"] - previous_close)
+            volume_confirmed = current["volume"] >= avg_volume * 1.15 if avg_volume else True
+            breakout_strength = move / atr if atr else 0
+
             direction = None
-            if current["close"] > high:
+            if current["close"] > high and breakout_strength >= 0.35:
                 direction = "CALL"
-            elif current["close"] < low:
+            elif current["close"] < low and breakout_strength >= 0.35:
                 direction = "PUT"
-            if not direction:
+            if not direction or not volume_confirmed:
                 continue
+
             entry = current["close"]
-            if direction == "CALL":
-                best = max(candle["high"] for candle in future)
-                worst = min(candle["low"] for candle in future)
-                pnl = min(5.0, best - entry) if best - entry >= 5 else min(best - entry, worst - entry)
-            else:
-                best = min(candle["low"] for candle in future)
-                worst = max(candle["high"] for candle in future)
-                pnl = min(5.0, entry - best) if entry - best >= 5 else min(entry - best, entry - worst)
-            volume_confirmed = current["volume"] >= avg_volume if avg_volume else False
-            move = abs(current["close"] - candles[index - 1]["close"])
-            tqs = max(35, min(95, 55 + move * 2 + (15 if volume_confirmed else 0)))
-            regime = "TREND_EXPANSION" if volume_confirmed and pnl > 0 else "RANGE_ABSORPTION" if pnl >= 0 else "REVERSAL_RISK"
+            target_points = max(5.0, atr * 0.8)
+            initial_stop = max(2.0, min(3.0, atr * 0.55))
+            trail_distance = max(1.0, atr * 0.35)
+            partial_taken = False
+            stop_price = entry - initial_stop if direction == "CALL" else entry + initial_stop
+            best_favorable = entry
+            exit_price = entry
+            exit_reason = "time_stop"
+
+            for candle in future:
+                if direction == "CALL":
+                    best_favorable = max(best_favorable, candle["high"])
+                    if candle["low"] <= stop_price:
+                        exit_price = stop_price
+                        exit_reason = "fast_stop_or_delta_reversal"
+                        break
+                    if not partial_taken and candle["high"] >= entry + target_points:
+                        partial_taken = True
+                        stop_price = max(stop_price, entry + 0.25)
+                    if partial_taken:
+                        stop_price = max(stop_price, best_favorable - trail_distance)
+                    exit_price = candle["close"]
+                else:
+                    best_favorable = min(best_favorable, candle["low"])
+                    if candle["high"] >= stop_price:
+                        exit_price = stop_price
+                        exit_reason = "fast_stop_or_delta_reversal"
+                        break
+                    if not partial_taken and candle["low"] <= entry - target_points:
+                        partial_taken = True
+                        stop_price = min(stop_price, entry - 0.25)
+                    if partial_taken:
+                        stop_price = min(stop_price, best_favorable + trail_distance)
+                    exit_price = candle["close"]
+
+            if exit_reason == "time_stop" and partial_taken:
+                exit_reason = "trailing_profit_lock"
+            raw_pnl = (exit_price - entry) if direction == "CALL" else (entry - exit_price)
+            # Conservative transaction cost/slippage estimate for scalping.
+            pnl = raw_pnl - 0.35
+            tqs = max(35, min(95, 58 + breakout_strength * 10 + (15 if volume_confirmed else 0) + (8 if partial_taken else 0)))
+            if tqs < 64:
+                continue
+            regime = "TREND_EXPANSION" if volume_confirmed and partial_taken else "RANGE_ABSORPTION" if pnl >= 0 else "REVERSAL_RISK"
             samples.append({
                 "symbol": symbol,
                 "time": current["time"],
                 "side": direction,
-                "entry": entry,
+                "entry": round(entry, 2),
+                "exit": round(exit_price, 2),
+                "exitReason": exit_reason,
                 "pnl": round(pnl, 2),
                 "tqs": round(tqs),
                 "volume": current["volume"],
+                "atr": round(atr, 2),
                 "regime": regime,
             })
             if len(samples) >= target:

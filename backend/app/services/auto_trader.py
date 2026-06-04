@@ -270,9 +270,11 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked"):
             reasons.append("chop filter blocked")
-        if candidate.get("tqs", 0) < 64:
-            reasons.append("TQS below minimum shadow threshold")
-        if required_move > self.settings.min_required_move_points * 1.8:
+        if candidate.get("tqs", 0) < 68:
+            reasons.append("TQS below production learning threshold")
+        if candidate.get("effectiveVolume", 0) <= 0:
+            reasons.append("missing effective volume")
+        if required_move > self.settings.min_required_move_points * 1.4:
             reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
             "blocked": bool(reasons),
