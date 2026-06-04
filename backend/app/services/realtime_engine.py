@@ -61,7 +61,7 @@ class PreviousTick:
 class RealTimeMarketEngine:
     """Builds terminal snapshots only from real Upstox responses."""
 
-    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms")
+    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms", "_pressure_mode", "_precision_entry_checklist", "_adaptive_exit_engine", "_no_trade_zones", "_tqs_breakdown")
 
     def validate_runtime(self) -> dict[str, Any]:
         missing = [name for name in self.REQUIRED_HELPERS if not hasattr(self, name)]
@@ -177,6 +177,10 @@ class RealTimeMarketEngine:
             exposure_pct=portfolio["exposurePct"],
             disconnects=0,
         )
+        upstox_latency = self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders)
+        tqs_breakdown = self._tqs_breakdown(ai_matrix)
+        no_trade_zones = self._no_trade_zones(session.phase, adaptive_risk, regime, chop_filter, spread_quality, volume_state, orderflow, upstox_latency, self._drawdown_pct(portfolio))
+        pressure_mode = self._pressure_mode(session.phase, orderflow, spread_quality, volume_state, upstox_latency, risk_decision.safe_mode, no_trade_zones)
 
         selected_side = "CALL" if option_bias["direction"] == "BULLISH" else "PUT"
         selected_option = call if selected_side == "CALL" else put
@@ -190,11 +194,29 @@ class RealTimeMarketEngine:
         capital_status = await self.trading_control.capital_status()
         trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
+        adaptive_exit = self._adaptive_exit_engine(selected_ltp, selected_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode)
+        precision_checklist = self._precision_entry_checklist(
+            tqs=tqs,
+            threshold=adaptive_risk["minimumTqs"],
+            spread_quality=spread_quality,
+            orderflow=orderflow,
+            volume_state=volume_state,
+            option_bias=option_bias,
+            selected_side=selected_side,
+            market_profile=market_profile,
+            spot=spot,
+            chop_filter=chop_filter,
+            no_trade_zones=no_trade_zones,
+            pressure_mode=pressure_mode,
+        )
         execution_allowed = bool(
             self.settings.enable_live_trading
             and not auto_trading_stopped
             and session.execution_allowed
             and risk_decision.allow_new_trade
+            and precision_checklist["passed"]
+            and not no_trade_zones["blocked"]
+            and pressure_mode["level"] != "CRITICAL"
             and not chop_filter["blocked"]
             and selected_instrument
             and selected_ltp > 0
@@ -234,6 +256,11 @@ class RealTimeMarketEngine:
             "tradingCapital": {**capital_status, "tradingCapital": float(trading_capital or 0)},
             "tradeMode": trade_mode,
             "qualityFilters": {"chopFilter": chop_filter, "volumeState": volume_state},
+            "pressureMode": pressure_mode,
+            "precisionChecklist": precision_checklist,
+            "adaptiveExit": adaptive_exit,
+            "noTradeZones": no_trade_zones,
+            "tqsBreakdown": tqs_breakdown,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
             "upstoxConnection": {
@@ -287,7 +314,7 @@ class RealTimeMarketEngine:
                 "brokerHealth": 100,
                 "websocketLatencyMs": round((perf_counter() - processing_started) * 1000, 2),
                 "orderRouterLatencyMs": 0,
-                "upstoxLatencyMs": self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders),
+                "upstoxLatencyMs": upstox_latency,
                 "redisHealth": 100,
                 "postgresHealth": 100,
                 "prometheusHealth": 100,
@@ -305,7 +332,7 @@ class RealTimeMarketEngine:
             "backtest": backtest_metrics,
             "executionDecision": {
                 "allowNewTrade": execution_allowed,
-                "reason": "CHOP_FILTER_BLOCKED" if chop_filter["blocked"] else "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
+                "reason": "NO_TRADE_ZONE" if no_trade_zones["blocked"] else "PRESSURE_MODE_CRITICAL" if pressure_mode["level"] == "CRITICAL" else "PRECISION_CHECKLIST_FAILED" if not precision_checklist["passed"] else "CHOP_FILTER_BLOCKED" if chop_filter["blocked"] else "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
                 "candidateInstrument": selected_instrument,
                 "candidateSide": selected_side,
                 "candidateLtp": selected_ltp,
@@ -750,6 +777,144 @@ class RealTimeMarketEngine:
     def _upstox_latency_ms(self, *payloads: dict[str, Any] | None) -> float:
         latencies = [as_float(payload.get("nexusquant_latency_ms")) for payload in payloads if isinstance(payload, dict) and payload.get("nexusquant_latency_ms") is not None]
         return round(mean(latencies), 2) if latencies else 0.0
+
+    def _pressure_mode(
+        self,
+        phase: MarketPhase,
+        orderflow: dict[str, Any],
+        spread_quality: int,
+        volume_state: dict[str, Any],
+        upstox_latency: float,
+        safe_mode: bool,
+        no_trade_zones: dict[str, Any],
+    ) -> dict[str, Any]:
+        triggers: list[str] = []
+        if safe_mode:
+            triggers.append("risk engine safe mode")
+        if upstox_latency > 1200:
+            triggers.append("Upstox response latency high")
+        if spread_quality < 55:
+            triggers.append("spread quality poor")
+        if abs(orderflow.get("deltaVelocity", 0)) > 75:
+            triggers.append("delta velocity shock")
+        if orderflow.get("sweepDetection", 0) > 80:
+            triggers.append("liquidity sweep risk")
+        if not volume_state.get("volumeAvailable"):
+            triggers.append("volume unavailable")
+        if no_trade_zones.get("blocked"):
+            triggers.append("no-trade zone active")
+        if phase != MarketPhase.LIVE_MARKET:
+            triggers.append("market not live")
+        level = "NORMAL"
+        if len(triggers) >= 4 or upstox_latency > 2500 or spread_quality < 35:
+            level = "CRITICAL"
+        elif len(triggers) >= 2:
+            level = "ELEVATED"
+        actions = {
+            "NORMAL": ["normal monitoring", "standard sizing allowed if all gates pass"],
+            "ELEVATED": ["reduce size", "raise TQS", "tighten spread filter", "increase cooldown"],
+            "CRITICAL": ["block new trades", "manage exits only", "require manual review"],
+        }[level]
+        return {"level": level, "triggers": triggers, "actions": actions, "score": max(0, 100 - len(triggers) * 18)}
+
+    def _precision_entry_checklist(
+        self,
+        *,
+        tqs: int,
+        threshold: int,
+        spread_quality: int,
+        orderflow: dict[str, Any],
+        volume_state: dict[str, Any],
+        option_bias: dict[str, Any],
+        selected_side: str,
+        market_profile: dict[str, Any],
+        spot: float,
+        chop_filter: dict[str, Any],
+        no_trade_zones: dict[str, Any],
+        pressure_mode: dict[str, Any],
+    ) -> dict[str, Any]:
+        checks = [
+            {"name": "TQS above threshold", "passed": tqs >= threshold, "value": tqs, "required": threshold, "critical": True},
+            {"name": "Spread quality", "passed": spread_quality >= 65, "value": spread_quality, "required": 65, "critical": True},
+            {"name": "Volume available", "passed": bool(volume_state.get("volumeAvailable")), "value": volume_state.get("source"), "required": "real Upstox volume", "critical": True},
+            {"name": "Breakout velocity", "passed": orderflow.get("breakoutVelocity", 0) >= 12, "value": orderflow.get("breakoutVelocity", 0), "required": 12, "critical": False},
+            {"name": "Delta velocity", "passed": abs(orderflow.get("deltaVelocity", 0)) >= 18, "value": orderflow.get("deltaVelocity", 0), "required": "+/-18", "critical": False},
+            {"name": "No chop block", "passed": not chop_filter.get("blocked"), "value": chop_filter.get("reasons", []), "required": "no block", "critical": True},
+            {"name": "No no-trade zone", "passed": not no_trade_zones.get("blocked"), "value": no_trade_zones.get("activeZones", []), "required": "none", "critical": True},
+            {"name": "Pressure not critical", "passed": pressure_mode.get("level") != "CRITICAL", "value": pressure_mode.get("level"), "required": "NORMAL/ELEVATED", "critical": True},
+            {"name": "Option bias aligned", "passed": (selected_side == "CALL" and option_bias.get("direction") == "BULLISH") or (selected_side == "PUT" and option_bias.get("direction") == "BEARISH"), "value": option_bias.get("direction"), "required": selected_side, "critical": False},
+            {"name": "Profile acceptance", "passed": spot >= market_profile.get("val", spot) and spot <= market_profile.get("vah", spot), "value": spot, "required": f"{market_profile.get('val')} - {market_profile.get('vah')}", "critical": False},
+        ]
+        critical_failed = [check for check in checks if check["critical"] and not check["passed"]]
+        passed_count = sum(1 for check in checks if check["passed"])
+        return {"passed": not critical_failed and passed_count >= 7, "passedCount": passed_count, "total": len(checks), "criticalFailed": critical_failed, "checks": checks}
+
+    def _adaptive_exit_engine(
+        self,
+        premium: float,
+        side: str,
+        orderflow: dict[str, Any],
+        spread_quality: int,
+        volume_state: dict[str, Any],
+        greeks: dict[str, Any],
+        pressure_mode: dict[str, Any],
+        safe_mode: bool,
+    ) -> dict[str, Any]:
+        target = max(self.settings.paper_target_points, premium * 0.04) if premium else self.settings.paper_target_points
+        stop = max(self.settings.paper_stop_points, premium * 0.025) if premium else self.settings.paper_stop_points
+        trail = max(1.0, target * 0.45)
+        rules = [
+            {"name": "Momentum decay exit", "active": orderflow.get("breakoutVelocity", 0) < 10, "action": "tighten trail or exit"},
+            {"name": "Delta reversal exit", "active": (side == "CALL" and orderflow.get("deltaVelocity", 0) < -15) or (side == "PUT" and orderflow.get("deltaVelocity", 0) > 15), "action": "exit on reversal"},
+            {"name": "Spread widening exit", "active": spread_quality < 55, "action": "exit/avoid new add"},
+            {"name": "Liquidity rejection exit", "active": not volume_state.get("volumeAvailable"), "action": "do not hold runner"},
+            {"name": "Pressure emergency flatten", "active": pressure_mode.get("level") == "CRITICAL" or safe_mode, "action": "flatten or manage only"},
+        ]
+        return {"targetPoints": round(target, 2), "stopPoints": round(stop, 2), "trailPoints": round(trail, 2), "partialExitAt": round(target * 0.6, 2), "rules": rules}
+
+    def _no_trade_zones(
+        self,
+        phase: MarketPhase,
+        adaptive_risk: dict[str, Any],
+        regime: str,
+        chop_filter: dict[str, Any],
+        spread_quality: int,
+        volume_state: dict[str, Any],
+        orderflow: dict[str, Any],
+        upstox_latency: float,
+        drawdown_pct: float,
+    ) -> dict[str, Any]:
+        zones: list[dict[str, Any]] = []
+        if phase != MarketPhase.LIVE_MARKET:
+            zones.append({"name": "Market not live", "severity": "hard", "reason": "Only analysis/backtest allowed outside live session"})
+        if adaptive_risk.get("sessionBucket") == "MIDDAY_CHOP":
+            zones.append({"name": "Midday chop", "severity": "soft", "reason": "Higher fake breakout risk"})
+        if regime in {"REVERSAL_RISK", "CLOSED_MARKET_ANALYSIS"}:
+            zones.append({"name": "Regime block", "severity": "hard", "reason": regime})
+        if chop_filter.get("blocked"):
+            zones.append({"name": "Chop filter", "severity": "hard", "reason": ", ".join(chop_filter.get("reasons", []))})
+        if spread_quality < 55:
+            zones.append({"name": "Wide spread", "severity": "hard", "reason": f"spread quality {spread_quality}"})
+        if not volume_state.get("volumeAvailable"):
+            zones.append({"name": "No volume confirmation", "severity": "hard", "reason": "Upstox volume unavailable"})
+        if upstox_latency > 2000:
+            zones.append({"name": "Latency spike", "severity": "hard", "reason": f"{upstox_latency}ms"})
+        if drawdown_pct >= adaptive_risk.get("dailyDrawdownPct", 3):
+            zones.append({"name": "Daily drawdown", "severity": "hard", "reason": f"{drawdown_pct}%"})
+        if orderflow.get("sweepDetection", 0) < 5 and orderflow.get("breakoutVelocity", 0) < 10:
+            zones.append({"name": "No sweep / weak breakout", "severity": "soft", "reason": "momentum quality weak"})
+        hard = [zone for zone in zones if zone["severity"] == "hard"]
+        return {"blocked": bool(hard), "activeZones": zones, "hardBlocks": hard}
+
+    def _tqs_breakdown(self, ai_matrix: list[dict[str, Any]]) -> dict[str, Any]:
+        weighted = []
+        for item in ai_matrix:
+            contribution = round(float(item.get("score", 0)) * float(item.get("weight", 0)), 2)
+            weighted.append({**item, "contribution": contribution})
+        top = sorted(weighted, key=lambda item: item["contribution"], reverse=True)[:3]
+        weak = [item for item in weighted if item.get("status") == "fail" or item.get("score", 0) < 62]
+        total = round(sum(item["contribution"] for item in weighted), 2)
+        return {"total": total, "components": weighted, "topContributors": top, "weakComponents": weak, "explanation": "TQS is weighted from real-data-derived engine scores; weak components should explain skipped trades."}
 
     def _backtest_metrics(self, candles: list[dict[str, Any]], tqs: int, spread_quality: int) -> list[dict[str, Any]]:
         if len(candles) < 3:

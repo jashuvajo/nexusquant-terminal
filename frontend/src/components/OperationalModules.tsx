@@ -182,6 +182,28 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           </ul>
         </div>
       )}
+      {snapshot.noTradeZones && snapshot.noTradeZones.activeZones.length > 0 && (
+        <div className="mt-4 rounded-2xl border border-rose-300/20 bg-rose-300/10 p-4 text-sm text-rose-100">
+          <p className="font-bold uppercase tracking-[0.2em]">No-Trade Zone Detector {snapshot.noTradeZones.blocked ? 'BLOCKING' : 'WATCH'}</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {snapshot.noTradeZones.activeZones.map((zone) => <li key={`${zone.name}-${zone.reason}`}>{zone.name}: {zone.reason}</li>)}
+          </ul>
+        </div>
+      )}
+      {snapshot.adaptiveExit && (
+        <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4 text-sm text-emerald-100">
+          <p className="font-bold uppercase tracking-[0.2em]">Adaptive Exit Engine</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-4">
+            <span>Target <b>{snapshot.adaptiveExit.targetPoints}</b></span>
+            <span>Stop <b>{snapshot.adaptiveExit.stopPoints}</b></span>
+            <span>Trail <b>{snapshot.adaptiveExit.trailPoints}</b></span>
+            <span>Partial <b>{snapshot.adaptiveExit.partialExitAt}</b></span>
+          </div>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs">
+            {snapshot.adaptiveExit.rules.filter((rule) => rule.active).map((rule) => <li key={rule.name}>{rule.name}: {rule.action}</li>)}
+          </ul>
+        </div>
+      )}
       {adaptive?.benchmarks && (
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard label="Backtest Target" value={`${adaptive.benchmarks.minimumTrades}+`} helper="Minimum meaningful trades" tone="cyan" />

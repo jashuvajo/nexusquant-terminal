@@ -254,6 +254,43 @@ export interface SuggestedTrade {
   levels: { poc: number; vah: number; val: number };
 }
 
+export interface PressureModeState {
+  level: 'NORMAL' | 'ELEVATED' | 'CRITICAL' | string;
+  triggers: string[];
+  actions: string[];
+  score: number;
+}
+
+export interface PrecisionChecklistState {
+  passed: boolean;
+  passedCount: number;
+  total: number;
+  criticalFailed: Array<Record<string, unknown>>;
+  checks: Array<{ name: string; passed: boolean; value: unknown; required: unknown; critical: boolean }>;
+}
+
+export interface AdaptiveExitState {
+  targetPoints: number;
+  stopPoints: number;
+  trailPoints: number;
+  partialExitAt: number;
+  rules: Array<{ name: string; active: boolean; action: string }>;
+}
+
+export interface NoTradeZoneState {
+  blocked: boolean;
+  activeZones: Array<{ name: string; severity: string; reason: string }>;
+  hardBlocks: Array<{ name: string; severity: string; reason: string }>;
+}
+
+export interface TqsBreakdownState {
+  total: number;
+  components: Array<EngineScore & { contribution: number }>;
+  topContributors: Array<EngineScore & { contribution: number }>;
+  weakComponents: Array<EngineScore & { contribution: number }>;
+  explanation: string;
+}
+
 export interface AutoTraderState {
   paperTrading: boolean;
   liveTradingEnabled: boolean;
@@ -299,6 +336,11 @@ export interface TerminalSnapshot {
   tradingCapital?: { tradingCapital: number; reason?: string; updatedAt?: string };
   tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
   qualityFilters?: QualityFilters;
+  pressureMode?: PressureModeState;
+  precisionChecklist?: PrecisionChecklistState;
+  adaptiveExit?: AdaptiveExitState;
+  noTradeZones?: NoTradeZoneState;
+  tqsBreakdown?: TqsBreakdownState;
   dataSource?: string;
   dataWarnings?: string[];
   upstoxConnection?: UpstoxConnectionState;

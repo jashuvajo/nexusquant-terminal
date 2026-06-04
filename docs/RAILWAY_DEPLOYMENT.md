@@ -650,3 +650,31 @@ A healthy market-data run requires:
 - `/api/market/snapshots` returning both NIFTY and SENSEX or a clear per-symbol Upstox error
 - STOP state intentionally set
 - trading capital configured before sizing tests
+
+
+## Precision execution engines
+
+NexusQuant now emits these explainability and protection layers on every real-data snapshot:
+
+```text
+pressureMode
+precisionChecklist
+adaptiveExit
+noTradeZones
+tqsBreakdown
+```
+
+- `pressureMode`: NORMAL / ELEVATED / CRITICAL with operator actions.
+- `precisionChecklist`: critical gate checklist for entry precision.
+- `adaptiveExit`: target, stop, trailing, partial exit, and active exit rules.
+- `noTradeZones`: explicit hard/soft blocks such as closed market, chop, latency, spread, volume and drawdown.
+- `tqsBreakdown`: weighted engine contribution and weak components explaining the final score.
+
+Live auto execution is blocked if:
+
+- pressure is CRITICAL
+- precision checklist fails
+- any hard no-trade zone is active
+- chop filter blocks
+- STOP is active
+- risk/capital/session gates fail
