@@ -13,6 +13,7 @@ from app.api.routes import alias_router, router
 from app.core.config import get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.auto_trader import AutoTraderEngine
+from app.services.event_journal import EventJournal
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.storage import AnalyticsStorage
@@ -35,6 +36,7 @@ trading_control = TradingControl(settings.redis_url)
 auto_trader = AutoTraderEngine(settings, trading_control)
 market_engine = RealTimeMarketEngine(settings, upstox_client, scorer, risk_engine, trading_control)
 storage = AnalyticsStorage(settings.database_url, settings.redis_url)
+event_journal = EventJournal(settings.database_url)
 
 SNAPSHOTS_STREAMED = Counter("nexusquant_snapshots_streamed_total", "Real Upstox market snapshots streamed to clients")
 STREAM_ERRORS = Counter("nexusquant_stream_errors_total", "Market stream status/error messages sent to clients")
@@ -45,7 +47,9 @@ LATEST_TQS = Gauge("nexusquant_latest_trade_quality_score", "Latest Trade Qualit
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await storage.connect()
+    await event_journal.connect()
     yield
+    await event_journal.close()
     await storage.close()
 
 
@@ -83,6 +87,7 @@ async def stream_status(websocket: WebSocket, status: str, message: str) -> bool
     if websocket.client_state != WebSocketState.CONNECTED or websocket.application_state != WebSocketState.CONNECTED:
         return False
     STREAM_ERRORS.inc()
+    await event_journal.record("API_ERROR", f"{status}: {message}", severity="ERROR", payload={"status": status, "message": message}, event_key=f"API_ERROR:{status}:{message}")
     try:
         await websocket.send_json({"type": "status", "status": status, "message": message})
         return True
@@ -90,6 +95,97 @@ async def stream_status(websocket: WebSocket, status: str, message: str) -> bool
         return False
 
 
+
+
+async def emit_journal_events(payload: dict) -> list[dict]:
+    emitted: list[dict] = []
+    for symbol, snapshot in (payload.get("snapshots") or {}).items():
+        for trade in snapshot.get("suggestedTrades") or []:
+            event = await event_journal.record(
+                "SIGNAL",
+                f"Signal generated: {symbol} {trade.get('strike')} {trade.get('side')} TQS {trade.get('tqs')}",
+                symbol=symbol,
+                severity="INFO",
+                payload=trade,
+                event_key=f"SIGNAL:{trade.get('id')}:{snapshot.get('timestamp')}",
+            )
+            if event:
+                emitted.append(event)
+        precision = snapshot.get("precisionChecklist") or {}
+        if precision and not precision.get("passed"):
+            event = await event_journal.record(
+                "REJECTION",
+                "Trade rejected by precision checklist",
+                symbol=symbol,
+                severity="WARN",
+                payload=precision,
+                event_key=f"REJECTION:PRECISION:{symbol}:{snapshot.get('timestamp')}",
+            )
+            if event:
+                emitted.append(event)
+        risk = snapshot.get("risk") or {}
+        if risk.get("safeMode"):
+            event = await event_journal.record(
+                "RISK_GATE",
+                "SAFE MODE activated",
+                symbol=symbol,
+                severity="WARN",
+                payload=risk,
+                event_key=f"RISK:SAFE:{symbol}:{snapshot.get('timestamp')}",
+            )
+            if event:
+                emitted.append(event)
+        no_trade = snapshot.get("noTradeZones") or {}
+        if no_trade.get("blocked"):
+            event = await event_journal.record(
+                "REJECTION",
+                "Trade rejected by no-trade zone detector",
+                symbol=symbol,
+                severity="WARN",
+                payload=no_trade,
+                event_key=f"REJECTION:NO_TRADE:{symbol}:{snapshot.get('timestamp')}",
+            )
+            if event:
+                emitted.append(event)
+        latency = (snapshot.get("infra") or {}).get("upstoxLatencyMs") or 0
+        if latency and latency > 1200:
+            event = await event_journal.record(
+                "LATENCY_SPIKE",
+                f"Upstox latency spike {latency}ms",
+                symbol=symbol,
+                severity="WARN",
+                payload=snapshot.get("infra") or {},
+                event_key=f"LATENCY:{symbol}:{snapshot.get('timestamp')}",
+            )
+            if event:
+                emitted.append(event)
+        adaptive_exit = snapshot.get("adaptiveExit") or {}
+        for rule in adaptive_exit.get("rules") or []:
+            if rule.get("active"):
+                event = await event_journal.record(
+                    "EXIT_RULE",
+                    f"Adaptive exit rule active: {rule.get('name')}",
+                    symbol=symbol,
+                    severity="INFO",
+                    payload=rule,
+                    event_key=f"EXIT_RULE:{symbol}:{rule.get('name')}:{snapshot.get('timestamp')}",
+                )
+                if event:
+                    emitted.append(event)
+    auto = payload.get("autoTrader") or {}
+    for trade in auto.get("openPaperTrades") or []:
+        event = await event_journal.record("ENTRY", "Paper trade entered", symbol=trade.get("symbol"), severity="INFO", payload=trade, event_key=f"ENTRY:{trade.get('id')}")
+        if event:
+            emitted.append(event)
+    for trade in auto.get("closedPaperTrades") or []:
+        event = await event_journal.record("EXIT", "Paper trade closed", symbol=trade.get("symbol"), severity="INFO", payload=trade, event_key=f"EXIT:{trade.get('id')}:{trade.get('exitedAt')}")
+        if event:
+            emitted.append(event)
+    for skipped in auto.get("skippedSignals") or []:
+        event = await event_journal.record("REJECTION", f"Signal skipped: {skipped.get('reason')}", severity="INFO", payload=skipped, event_key=f"SKIP:{skipped.get('candidate')}:{skipped.get('reason')}")
+        if event:
+            emitted.append(event)
+    return emitted
 
 async def build_multi_symbol_snapshot() -> dict:
     symbols = ["NIFTY", "SENSEX"]
@@ -124,6 +220,8 @@ async def build_multi_symbol_snapshot() -> dict:
         "executionCandidates": execution_candidates,
     }
     payload["autoTrader"] = await auto_trader.process(payload)
+    await emit_journal_events(payload)
+    payload["eventJournal"] = await event_journal.recent(50)
     return payload
 
 @app.websocket("/ws/market")

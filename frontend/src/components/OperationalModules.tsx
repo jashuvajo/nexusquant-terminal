@@ -288,26 +288,33 @@ export function AiAnalytics({ snapshot }: { snapshot: TerminalSnapshot }) {
 }
 
 export function TradeJournal({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const events = snapshot.eventJournal ?? [];
   return (
-    <Card title="Trade Journal" eyebrow="Permanent execution analytics log">
-      <div className="overflow-hidden rounded-2xl border border-slate-700/70">
-        <table className="w-full min-w-[680px] text-left text-sm">
-          <thead className="bg-slate-900/90 text-xs uppercase tracking-[0.2em] text-slate-400">
-            <tr><th className="p-3">Time</th><th>Instrument</th><th>TQS</th><th>PnL</th><th>Exit Reason</th></tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800 bg-slate-950/40">
-            {snapshot.journal.map((entry) => (
-              <tr key={`${entry.time}-${entry.instrument}`} className="text-slate-300">
-                <td className="p-3 font-mono text-slate-400">{entry.time}</td>
-                <td>{entry.instrument}</td>
-                <td>{entry.tqs}</td>
-                <td className={entry.pnl >= 0 ? 'font-bold text-emerald-300' : 'font-bold text-rose-300'}>{formatCurrency(entry.pnl)}</td>
-                <td>{entry.exitReason}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <Card title="Institutional Event Journal" eyebrow="Signals, entries, exits, rejections, risk gates, latency and API errors">
+      {events.length > 0 ? (
+        <div className="overflow-hidden rounded-2xl border border-slate-700/70">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead className="bg-slate-900/90 text-xs uppercase tracking-[0.2em] text-slate-400">
+              <tr><th className="p-3">Time</th><th>Type</th><th>Severity</th><th>Symbol</th><th>Message</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800 bg-slate-950/40">
+              {events.map((event) => (
+                <tr key={event.eventId} className="text-slate-300">
+                  <td className="p-3 font-mono text-slate-400">{new Date(event.timestamp).toLocaleTimeString()}</td>
+                  <td className="font-bold text-cyan-200">{event.type}</td>
+                  <td className={event.severity === 'ERROR' ? 'font-bold text-rose-300' : event.severity === 'WARN' ? 'font-bold text-amber-300' : 'font-bold text-emerald-300'}>{event.severity}</td>
+                  <td>{event.symbol ?? '-'}</td>
+                  <td>{event.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-5 text-sm text-slate-300">
+          No journal events yet. Events will appear for signals, rejections, entries, exits, risk gates, latency spikes and API errors.
+        </div>
+      )}
     </Card>
   );
 }

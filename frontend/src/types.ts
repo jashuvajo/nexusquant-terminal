@@ -213,6 +213,16 @@ export interface TelemetryPoint {
   price: number;
 }
 
+export interface JournalEvent {
+  eventId: string;
+  timestamp: string;
+  type: string;
+  severity: string;
+  symbol?: string | null;
+  message: string;
+  payload: Record<string, unknown>;
+}
+
 export interface JournalEntry {
   time: string;
   instrument: string;
@@ -389,5 +399,6 @@ export interface TerminalSnapshot {
   strategy: StrategyRoute;
   telemetry: TelemetryPoint[];
   journal: JournalEntry[];
+  eventJournal?: JournalEvent[];
   backtest: BacktestMetric[];
 }

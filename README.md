@@ -730,3 +730,25 @@ After Upstox token is active, trigger both-index training immediately:
 ```
 
 This attempts NIFTY and SENSEX historical candle training. If token/history is unavailable, the response returns a clear per-symbol error.
+
+
+## Institutional event journal
+
+The backend permanently records execution-framework events to PostgreSQL when available, with memory fallback:
+
+- `SIGNAL`
+- `ENTRY`
+- `EXIT`
+- `REJECTION`
+- `RISK_GATE`
+- `EXIT_RULE`
+- `API_ERROR`
+- `LATENCY_SPIKE`
+
+Endpoint:
+
+```text
+/api/event-journal/recent
+```
+
+The WebSocket stream also includes recent events as `eventJournal`, which powers the frontend Trade Journal.

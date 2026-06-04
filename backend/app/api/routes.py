@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.auto_trader import AutoTraderEngine
 from app.services.ai_learning import ContinuousAILearner
+from app.services.event_journal import EventJournal
 from app.services.historical_trainer import HistoricalTrainer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
@@ -48,6 +49,14 @@ class RiskProfileRequest(BaseModel):
     profile: str = Field(..., description="safe_beginner, balanced_pro, aggressive_scalping, extreme_prop, realistic_aggressive")
 
 
+class EventRecordRequest(BaseModel):
+    event_type: str
+    message: str
+    symbol: str | None = None
+    severity: str = "INFO"
+    payload: dict = Field(default_factory=dict)
+
+
 def get_upstox_auth(settings: Settings = Depends(get_settings)) -> UpstoxAuthService:
     return UpstoxAuthService(
         api_key=settings.upstox_api_key,
@@ -66,6 +75,10 @@ def get_upstox(
 
 def get_trading_control(settings: Settings = Depends(get_settings)) -> TradingControl:
     return TradingControl(settings.redis_url)
+
+
+def get_event_journal(settings: Settings = Depends(get_settings)) -> EventJournal:
+    return EventJournal(settings.database_url)
 
 
 def get_ai_learner(settings: Settings = Depends(get_settings)) -> ContinuousAILearner:
@@ -122,7 +135,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.6.1-websocket-training-fix",
+        "apiVersion": "0.7.0-institutional-event-journal",
         "runtimeValidation": engine.validate_runtime(),
         "environment": settings.environment,
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
@@ -146,6 +159,7 @@ async def deployment_status(
             "/api/ai-learning/reset",
             "/api/ai-learning/train-historical",
             "/api/ai-learning/train-now",
+            "/api/event-journal/recent",
         ],
     }
 
@@ -358,6 +372,23 @@ async def place_scalp_order(
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"submitted": True, "session": session.label, "order": order, "upstox": response}
+
+
+@router.get("/event-journal/recent")
+async def event_journal_recent(limit: int = 100, journal: EventJournal = Depends(get_event_journal)) -> dict:
+    return {"events": await journal.recent(limit), "limit": limit}
+
+
+@router.post("/event-journal/record")
+async def event_journal_record(request: EventRecordRequest, journal: EventJournal = Depends(get_event_journal)) -> dict:
+    event = await journal.record(
+        request.event_type,
+        request.message,
+        symbol=request.symbol,
+        severity=request.severity,
+        payload=request.payload,
+    )
+    return {"event": event}
 
 
 @router.post("/ai-learning/train-now")
