@@ -11,6 +11,7 @@ from starlette.responses import Response
 from app.api.routes import alias_router, router
 from app.core.config import get_settings
 from app.services.ai_engine import TradeQualityScorer
+from app.services.auto_trader import AutoTraderEngine
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.storage import AnalyticsStorage
@@ -30,6 +31,7 @@ auth_service = UpstoxAuthService(
 )
 upstox_client = UpstoxClient(settings.upstox_api_key, settings.upstox_api_secret, auth_service)
 trading_control = TradingControl(settings.redis_url)
+auto_trader = AutoTraderEngine(settings, trading_control)
 market_engine = RealTimeMarketEngine(settings, upstox_client, scorer, risk_engine, trading_control)
 storage = AnalyticsStorage(settings.database_url, settings.redis_url)
 
@@ -105,7 +107,7 @@ async def build_multi_symbol_snapshot() -> dict:
         for trade in snapshot.get("suggestedTrades") or []:
             execution_candidates.append({"symbol": symbol, **trade})
 
-    return {
+    payload = {
         **primary,
         "type": "multi_snapshot",
         "displaySymbol": primary.get("symbol"),
@@ -114,6 +116,8 @@ async def build_multi_symbol_snapshot() -> dict:
         "symbolErrors": errors,
         "executionCandidates": execution_candidates,
     }
+    payload["autoTrader"] = await auto_trader.process(payload)
+    return payload
 
 @app.websocket("/ws/market")
 async def market_stream(websocket: WebSocket) -> None:

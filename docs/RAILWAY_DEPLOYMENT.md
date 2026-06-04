@@ -570,3 +570,43 @@ Chop filter blocks execution candidates when multiple weak conditions appear:
 - reversal/chop regime
 
 This keeps auto-trading off during weak market structure while still allowing backtesting and suggestions.
+
+
+## Paper trading, replay and learning layer
+
+Recommended production variables before live auto execution:
+
+```text
+PAPER_TRADING=true
+AI_LEARNING_ENABLED=true
+PAPER_TARGET_POINTS=5
+PAPER_STOP_POINTS=3
+MAX_PAPER_TRADE_SECONDS=180
+MIN_REQUIRED_MOVE_POINTS=5
+```
+
+When `PAPER_TRADING=true`, NexusQuant records every valid signal as a shadow trade instead of sending a broker order. It stores:
+
+- signal generated
+- risk checked
+- paper opened
+- exited
+- entry/exit premium
+- slippage estimate
+- spread cost
+- TQS
+- reason for entry/exit
+- profit/loss
+
+The replay buffer stores compact market snapshots for debugging and backtesting.
+
+Useful endpoints:
+
+```text
+/api/auto-trader/status
+/api/auto-trader/replay
+/api/auto-trader/daily-report
+/api/market/snapshots
+```
+
+The online learning tracker updates every snapshot tick from real-data-derived signals and paper outcomes. It is an online calibration layer, not a fully persisted offline ML retrain yet.

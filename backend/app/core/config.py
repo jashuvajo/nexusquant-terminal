@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     max_exposure_pct: int = 42
     daily_drawdown_pct: float = 3.0
     trading_capital_default: float = 0.0
+    min_required_move_points: float = 5.0
+    max_paper_trade_seconds: int = 180
+    paper_stop_points: float = 3.0
+    paper_target_points: float = 5.0
+    ai_learning_enabled: bool = True
+    paper_trading: bool = True
     market_poll_seconds: float = 1.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

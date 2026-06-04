@@ -254,6 +254,37 @@ export interface SuggestedTrade {
   levels: { poc: number; vah: number; val: number };
 }
 
+export interface AutoTraderState {
+  paperTrading: boolean;
+  liveTradingEnabled: boolean;
+  autoTradingStopped: boolean;
+  signalsThisTick: number;
+  skippedSignals: Array<{ candidate?: string; reason: string; quality?: Record<string, unknown> }>;
+  openPaperTrades: Array<Record<string, unknown>>;
+  closedPaperTrades: Array<Record<string, unknown>>;
+  orderLifecycle: Array<{ state: string; timestamp: string; reason: string; payload?: Record<string, unknown> }>;
+  replay: { storedSnapshots: number; latestTimestamp?: string };
+  exitEngine: { rules: string[]; exitsThisTick: Array<Record<string, unknown>> };
+  slippageModel: { averageExpectedSlippage: number; minimumRequiredMovePoints: number; model: string };
+  positionSizing: { capital: number; candidates: Array<Record<string, unknown>> };
+  onlineLearning: { enabled: boolean; mode: string; samples: number; score: number; lastUpdatedAt?: string; note: string };
+  dailyReport: {
+    totalSignals: number;
+    paperTrades: number;
+    openTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    grossProfit: number;
+    grossLoss: number;
+    profitFactor: number;
+    maxDrawdown: number;
+    bestSession?: string;
+    worstSession?: string;
+    reasonForLosses: Record<string, number>;
+  };
+}
+
 export interface TerminalSnapshot {
   type?: 'snapshot';
   timestamp: string;
@@ -275,6 +306,7 @@ export interface TerminalSnapshot {
   premarketAnalysis?: PremarketAnalysis;
   tomorrowTradePlan?: TomorrowTradePlan;
   suggestedTrades?: SuggestedTrade[];
+  autoTrader?: AutoTraderState;
   symbol: MarketSymbol;
   spot: number;
   atmStrike: number;

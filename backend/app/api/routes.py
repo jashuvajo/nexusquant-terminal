@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
 from app.services.ai_engine import TradeQualityScorer
+from app.services.auto_trader import AutoTraderEngine
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
@@ -63,6 +64,10 @@ def get_upstox(
 
 def get_trading_control(settings: Settings = Depends(get_settings)) -> TradingControl:
     return TradingControl(settings.redis_url)
+
+
+def get_auto_trader(settings: Settings = Depends(get_settings), control: TradingControl = Depends(get_trading_control)) -> AutoTraderEngine:
+    return AutoTraderEngine(settings, control)
 
 
 def get_market_engine(
@@ -120,7 +125,7 @@ async def deployment_status(
 
 
 @router.get("/market/snapshots")
-async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
+async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     results = await asyncio.gather(
         engine.snapshot("NIFTY"),
         engine.snapshot("SENSEX"),
@@ -139,7 +144,9 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
     for symbol, snapshot in snapshots.items():
         for trade in snapshot.get("suggestedTrades") or []:
             candidates.append({"symbol": symbol, **trade})
-    return {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
+    payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
+    payload["autoTrader"] = await auto_engine.process(payload)
+    return payload
 
 
 @router.get("/market/snapshot/{symbol}")
@@ -321,6 +328,21 @@ async def place_scalp_order(
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"submitted": True, "session": session.label, "order": order, "upstox": response}
+
+
+@router.get("/auto-trader/status")
+async def auto_trader_status(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.status()
+
+
+@router.get("/auto-trader/replay")
+async def auto_trader_replay(limit: int = 250, engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.replay(limit)
+
+
+@router.get("/auto-trader/daily-report")
+async def auto_trader_daily_report(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.daily_report()
 
 
 @router.get("/risk/profiles")

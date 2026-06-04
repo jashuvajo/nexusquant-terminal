@@ -338,13 +338,57 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
 }
 
 export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const auto = snapshot.autoTrader;
   return (
-    <Card title="Backtesting" eyebrow="Real Upstox candle replay when auto trading is off">
+    <Card title="Backtesting Hub" eyebrow="Paper trading, replay, lifecycle, online learning and daily report">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {snapshot.backtest.map((metric) => (
           <MetricCard key={metric.name} label={metric.name} value={`${formatNumber(metric.value)}${metric.unit}`} helper="Computed from real Upstox candles" tone="cyan" />
         ))}
       </div>
+      {auto && (
+        <>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Paper Trading" value={auto.paperTrading ? 'ON' : 'OFF'} helper="Shadow execution safety" tone={auto.paperTrading ? 'emerald' : 'amber'} />
+            <MetricCard label="Signals / Tick" value={auto.signalsThisTick} helper="NIFTY + SENSEX candidates" tone="cyan" />
+            <MetricCard label="Replay Buffer" value={auto.replay.storedSnapshots} helper="Stored market snapshots" tone="violet" />
+            <MetricCard label="AI Learning" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.score}`} tone="emerald" />
+            <MetricCard label="Paper Trades" value={auto.dailyReport.paperTrades} helper={`${auto.dailyReport.openTrades} open`} tone="cyan" />
+            <MetricCard label="Win Rate" value={`${auto.dailyReport.winRate}%`} helper={`${auto.dailyReport.wins}W / ${auto.dailyReport.losses}L`} tone="emerald" />
+            <MetricCard label="Profit Factor" value={auto.dailyReport.profitFactor} helper="Paper outcomes" tone="amber" />
+            <MetricCard label="Max DD" value={formatCurrency(auto.dailyReport.maxDrawdown)} helper="Paper drawdown" tone="rose" />
+          </div>
+          <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-200">Order lifecycle</p>
+              <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1 text-xs text-slate-300">
+                {auto.orderLifecycle.slice(-12).map((event, index) => (
+                  <div key={`${event.timestamp}-${index}`} className="rounded-xl bg-slate-900/80 p-3">
+                    <div className="flex justify-between gap-3"><span className="font-bold text-white">{event.state}</span><span className="font-mono text-slate-500">{new Date(event.timestamp).toLocaleTimeString()}</span></div>
+                    <p className="mt-1 text-slate-400">{event.reason}</p>
+                  </div>
+                ))}
+                {auto.orderLifecycle.length === 0 && <p>No lifecycle events yet.</p>}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-emerald-200">Exit engine + slippage</p>
+              <div className="mt-3 grid gap-2 text-sm text-slate-300">
+                <div className="flex justify-between"><span>Avg expected slippage</span><span className="font-mono text-white">{auto.slippageModel.averageExpectedSlippage}</span></div>
+                <div className="flex justify-between"><span>Min required move</span><span className="font-mono text-white">{auto.slippageModel.minimumRequiredMovePoints}</span></div>
+                <div className="flex justify-between"><span>Position capital</span><span className="font-mono text-white">{formatCurrency(auto.positionSizing.capital)}</span></div>
+              </div>
+              <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-400">
+                {auto.exitEngine.rules.map((rule) => <li key={rule}>{rule}</li>)}
+              </ul>
+            </div>
+          </div>
+          <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+            <p className="font-bold uppercase tracking-[0.2em]">Online learning every tick</p>
+            <p className="mt-2">{auto.onlineLearning.note}</p>
+          </div>
+        </>
+      )}
       {snapshot.suggestedTrades && snapshot.suggestedTrades.length > 0 && (
         <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
           <p className="font-bold uppercase tracking-[0.2em]">Suggestion mode</p>
