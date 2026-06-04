@@ -44,7 +44,7 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
                 </div>
               </div>
               <p className="mt-5 text-sm leading-6 text-slate-300">
-                {issue?.message ?? 'Connecting to the Render backend WebSocket. The terminal will stay blank until a real Upstox snapshot is received.'}
+                {issue?.message ?? 'Connecting to the Railway backend HTTP polling stream. The terminal will stay blank until a real Upstox snapshot is received.'}
               </p>
               <div className="mt-6 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
                 This build intentionally removed local simulated prices. Configure/redeploy Railway backend, Upstox token, and Vercel URLs to see live or closed-market analysis.

@@ -752,3 +752,17 @@ Endpoint:
 ```
 
 The WebSocket stream also includes recent events as `eventJournal`, which powers the frontend Trade Journal.
+
+
+## HTTP polling stream fallback
+
+The frontend now uses `/api/market/snapshots` as the primary continuous stream instead of relying on browser WebSockets. This avoids repeated Railway/Vercel/mobile WebSocket open/close loops.
+
+Variables:
+
+```text
+VITE_API_URL=https://nexusquant-api-production.up.railway.app
+VITE_POLL_MS=3000
+```
+
+`VITE_WS_URL` can remain set, but the current frontend stream uses HTTP polling for stability.
