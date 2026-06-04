@@ -226,6 +226,27 @@ class StrategyOptimizer:
             },
         }
 
+    def _recommended_profiles(self, symbol: str, evaluations: list[dict[str, Any]]) -> dict[str, Any]:
+        viable = [item for item in evaluations if item["trades"] >= 300]
+        source = viable or evaluations
+        if not source:
+            return {}
+        runner = max(source, key=lambda item: item["profitFactorScore"])
+        high_win_candidates = [item for item in source if item["profitFactor"] >= 1.2]
+        high_win = max(high_win_candidates or source, key=lambda item: item["highWinScalpScore"])
+        low_dd = max(source, key=lambda item: item["lowDrawdownScore"])
+        return {
+            "symbol": symbol,
+            "runnerProfile": runner,
+            "highWinScalpProfile": high_win,
+            "lowDrawdownProfile": low_dd,
+            "notes": [
+                "Runner profile maximizes PF and accepts low win rate.",
+                "High-win scalp profile prioritizes win rate but penalizes PF below 1.5.",
+                "Use separate profiles for NIFTY and SENSEX.",
+            ],
+        }
+
     def _max_drawdown(self, pnls: list[float]) -> float:
         equity = 0.0
         peak = 0.0
