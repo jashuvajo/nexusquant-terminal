@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from itertools import product
@@ -8,6 +9,13 @@ from typing import Any
 from app.core.config import Settings
 from app.services.realtime_engine import as_float, as_int
 from app.services.upstox_client import UpstoxClient
+
+try:
+    import redis.asyncio as redis  # type: ignore
+except Exception:  # pragma: no cover
+    redis = None
+
+OPTIMIZER_KEY = "nexusquant:strategy_optimizer:latest"
 
 
 @dataclass(frozen=True)
@@ -22,6 +30,8 @@ class StrategyParams:
 
 class StrategyOptimizer:
     """Grid-search optimizer using real Upstox historical candles."""
+
+    _latest_results: dict[str, Any] = {}
 
     def __init__(self, settings: Settings, client: UpstoxClient) -> None:
         self.settings = settings
@@ -61,7 +71,7 @@ class StrategyOptimizer:
             evaluations.append(self._metrics(params, trades, objective))
         viable = [item for item in evaluations if item["trades"] >= max(50, target_samples * 0.1)]
         ranked = sorted(viable or evaluations, key=lambda item: item["objectiveScore"], reverse=True)
-        return {
+        result = {
             "symbol": symbol,
             "instrumentKey": instrument_key,
             "fromDate": from_date,
@@ -80,6 +90,32 @@ class StrategyOptimizer:
             "top10": ranked[:10],
             "note": "Optimizer uses real Upstox historical candles with deterministic scalp simulation; no fake market data is created.",
         }
+        await self._store_result(symbol, objective, result)
+        return result
+
+    async def _store_result(self, symbol: str, objective: str, result: dict[str, Any]) -> None:
+        key = f"{symbol}:{objective}"
+        StrategyOptimizer._latest_results[key] = result
+        if redis is not None:
+            try:
+                client = redis.from_url(self.settings.redis_url, encoding="utf-8", decode_responses=True)
+                await client.hset(OPTIMIZER_KEY, key, json.dumps(result))
+                await client.aclose()
+            except Exception:
+                pass
+
+    async def latest(self) -> dict[str, Any]:
+        results = dict(StrategyOptimizer._latest_results)
+        if redis is not None:
+            try:
+                client = redis.from_url(self.settings.redis_url, encoding="utf-8", decode_responses=True)
+                raw = await client.hgetall(OPTIMIZER_KEY)
+                await client.aclose()
+                for key, value in raw.items():
+                    results[key] = json.loads(value)
+            except Exception:
+                pass
+        return {"results": results, "count": len(results)}
 
     def _parameter_grid(self, limit: int) -> list[StrategyParams]:
         raw = product(

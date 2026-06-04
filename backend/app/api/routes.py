@@ -141,7 +141,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.8.1-optimizer-profile-fix",
+        "apiVersion": "0.8.2-optimizer-storage",
         "runtimeValidation": engine.validate_runtime(),
         "environment": settings.environment,
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
@@ -168,6 +168,7 @@ async def deployment_status(
             "/api/ai-learning/train-now",
             "/api/strategy-optimizer/run",
             "/api/strategy-optimizer/run-both",
+            "/api/strategy-optimizer/latest",
             "/api/event-journal/recent",
         ],
     }
@@ -411,6 +412,11 @@ async def event_journal_record(request: EventRecordRequest, journal: EventJourna
         payload=request.payload,
     )
     return {"event": event}
+
+
+@router.get("/strategy-optimizer/latest")
+async def strategy_optimizer_latest(optimizer: StrategyOptimizer = Depends(get_strategy_optimizer)) -> dict:
+    return await optimizer.latest()
 
 
 @router.get("/strategy-optimizer/run")
