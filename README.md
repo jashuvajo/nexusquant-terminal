@@ -775,7 +775,7 @@ For production scalping telemetry, frontend uses WebSocket as primary transport 
 Vercel variables:
 
 ```text
-VITE_STREAM_MODE=websocket
+VITE_STREAM_MODE=polling
 VITE_WS_URL=wss://nexusquant-api-production.up.railway.app/ws/market
 VITE_WS_CLIENT_HEARTBEAT_MS=5000
 VITE_POLL_MS=3000
@@ -786,3 +786,23 @@ Options:
 - `VITE_STREAM_MODE=websocket`: primary WebSocket, fallback after repeated failures
 - `VITE_STREAM_MODE=polling`: force HTTP polling only
 - `VITE_STREAM_MODE=hybrid`: try WebSocket once, fallback quickly
+
+
+## Railway transport rule
+
+Railway is currently closing browser WebSockets quickly in this deployment. For Railway, the frontend forces HTTP polling by default when `VITE_API_URL` contains `.up.railway.app`.
+
+Use these Vercel variables for Railway:
+
+```text
+VITE_STREAM_MODE=polling
+VITE_FORCE_WEBSOCKET=false
+VITE_POLL_MS=3000
+```
+
+WebSocket can be re-enabled later for AWS/ALB by setting:
+
+```text
+VITE_FORCE_WEBSOCKET=true
+VITE_STREAM_MODE=websocket
+```

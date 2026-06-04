@@ -3,7 +3,10 @@ import type { MarketSymbol, StreamStatus, TerminalSnapshot } from '../types';
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const wsUrl = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws/market';
-const streamMode = (import.meta.env.VITE_STREAM_MODE ?? 'websocket') as 'websocket' | 'polling' | 'hybrid';
+const configuredStreamMode = (import.meta.env.VITE_STREAM_MODE ?? 'polling') as 'websocket' | 'polling' | 'hybrid';
+const forceWebSocket = import.meta.env.VITE_FORCE_WEBSOCKET === 'true';
+const isRailwayBackend = apiUrl.includes('.up.railway.app');
+const streamMode = isRailwayBackend && !forceWebSocket ? 'polling' : configuredStreamMode;
 const pollMs = Number(import.meta.env.VITE_POLL_MS ?? 3000);
 const clientHeartbeatMs = Number(import.meta.env.VITE_WS_CLIENT_HEARTBEAT_MS ?? 5000);
 const reconnectDelays = [1000, 2000, 4000, 8000, 10000];
