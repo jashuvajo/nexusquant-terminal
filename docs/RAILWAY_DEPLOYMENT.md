@@ -1146,3 +1146,18 @@ It searches:
 - max hold bars
 
 This is the exact optimizer for 15→150 style premium runners.
+
+
+## Finnhub news provider
+
+Finnhub is the primary external news provider for NexusQuant. Upstox News remains a fallback if available.
+
+Railway variables:
+
+```text
+NEWS_PROVIDER=finnhub
+FINNHUB_API_KEY=your_finnhub_key
+NEWS_LOOKBACK_ITEMS=20
+```
+
+News is used for event-risk filtering, TQS tightening, and runner-bias support. It should not create trades by itself.

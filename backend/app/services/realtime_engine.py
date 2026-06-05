@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.explosive_runner import ExplosiveRunnerEngine
 from app.services.news_engine import NewsEngine
+from app.services.news_provider import NewsProvider
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import adaptive_settings
 from app.services.session import IST, MarketPhase, current_session_state
@@ -127,12 +128,18 @@ class RealTimeMarketEngine:
         funds_task = self._optional(self.client.funds(), "funds", data_warnings)
         positions_task = self._optional(self.client.positions(), "positions", data_warnings)
         orders_task = self._optional(self.client.orders(), "orders", data_warnings)
-        news_task = self._optional(self.client.news_headlines(instrument_key), "news", data_warnings)
+        external_news_task = self._optional(NewsProvider(self.settings).fetch(selected_symbol), "external_news", data_warnings)
+        upstox_news_task = self._optional(self.client.news_headlines(instrument_key), "upstox_news", data_warnings)
 
-        option_chain, candles, ltp_quote, funds, positions, orders, news_payload = await asyncio.gather(
-            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, news_task
+        option_chain, candles, ltp_quote, funds, positions, orders, external_news, upstox_news = await asyncio.gather(
+            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, external_news_task, upstox_news_task
         )
-        news_state = NewsEngine().analyze(news_payload, next((warning for warning in data_warnings if "news" in warning.lower()), None))
+        news_payload = external_news if (external_news or {}).get("data") else upstox_news
+        news_reason = None
+        if not (external_news or {}).get("data"):
+            news_reason = (external_news or {}).get("reason") or next((warning for warning in data_warnings if "news" in warning.lower()), None)
+        news_state = NewsEngine().analyze(news_payload, news_reason)
+        news_state["providerStatus"] = {"external": external_news, "upstox": {"available": bool(upstox_news), "error": next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None)}}
 
         chain_rows = option_chain.get("data") or []
         if not chain_rows:
@@ -208,7 +215,7 @@ class RealTimeMarketEngine:
             exposure_pct=portfolio["exposurePct"],
             disconnects=0,
         )
-        upstox_latency = self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders, news_payload)
+        upstox_latency = self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders, upstox_news)
         tqs_breakdown = self._tqs_breakdown(ai_matrix)
         no_trade_zones = self._no_trade_zones(session.phase, adaptive_risk, regime, chop_filter, spread_quality, volume_state, orderflow, upstox_latency, self._drawdown_pct(portfolio), entry_model, news_state)
         pressure_mode = self._pressure_mode(session.phase, orderflow, spread_quality, volume_state, upstox_latency, risk_decision.safe_mode, no_trade_zones)

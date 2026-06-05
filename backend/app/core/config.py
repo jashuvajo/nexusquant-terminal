@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
     option_premium_history_available: bool = True
+    news_lookback_items: int = 20
+    finnhub_api_key: str | None = None
+    news_provider: str = "finnhub"
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35

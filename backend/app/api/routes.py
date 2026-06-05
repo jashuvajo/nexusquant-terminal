@@ -16,6 +16,8 @@ from app.services.event_journal import EventJournal
 from app.services.historical_trainer import HistoricalTrainer
 from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.ltp_range_analyzer import LtpRangeAnalyzer
+from app.services.news_engine import NewsEngine
+from app.services.news_provider import NewsProvider
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
@@ -218,13 +220,19 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
 
 @router.get("/market/news/{symbol}")
 async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
-    try:
-        payload = await client.news_headlines(settings.instrument_key_for(symbol))
-        from app.services.news_engine import NewsEngine
-        return NewsEngine().analyze(payload)
-    except (UpstoxAuthRequired, UpstoxDataError) as exc:
-        from app.services.news_engine import NewsEngine
-        return NewsEngine().analyze(None, str(exc))
+    external = await NewsProvider(settings).fetch(symbol)
+    upstox_payload = None
+    upstox_error = None
+    if not external.get("data"):
+        try:
+            upstox_payload = await client.news_headlines(settings.instrument_key_for(symbol))
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            upstox_error = str(exc)
+    payload = external if external.get("data") else upstox_payload
+    reason = None if external.get("data") or upstox_payload else external.get("reason") or upstox_error
+    state = NewsEngine().analyze(payload, reason)
+    state["providerStatus"] = {"external": external, "upstox": {"available": bool(upstox_payload), "error": upstox_error}}
+    return state
 
 
 @router.get("/institutional/readiness/{symbol}")
