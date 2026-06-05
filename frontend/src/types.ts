@@ -254,6 +254,8 @@ export interface SuggestedTrade {
   chopReasons?: string[];
   volumeSource?: string;
   effectiveVolume?: number;
+  strategyType?: string;
+  runnerSignal?: ExplosiveRunnerState;
   tqs: number;
   confidence: 'LOW' | 'MEDIUM' | 'HIGH' | string;
   bias: string;
@@ -263,6 +265,8 @@ export interface SuggestedTrade {
   invalidations: string[];
   levels: { poc: number; vah: number; val: number };
 }
+
+export interface ExplosiveRunnerState { strategyType: string; candidate: boolean; confidence: string; score: number; targetPremiumPct: number; hardStopPct: number; trailPct: number; partialExitPct: number; runnerPct: number; reasons: string[]; dataStatus: Record<string, unknown>; metrics: Record<string, number>; }
 
 export interface EntryModelState { model: string; state: string; openingRangeHigh?: number; openingRangeLow?: number; spot?: number; retestConfirmed: boolean; failedBreakout: boolean; direction?: string; }
 
@@ -395,6 +399,7 @@ export interface TerminalSnapshot {
   tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
   qualityFilters?: QualityFilters;
   entryModel?: EntryModelState;
+  explosiveRunner?: ExplosiveRunnerState;
   pressureMode?: PressureModeState;
   precisionChecklist?: PrecisionChecklistState;
   adaptiveExit?: AdaptiveExitState;

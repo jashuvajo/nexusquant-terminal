@@ -1018,3 +1018,36 @@ Useful endpoints:
 /api/auto-trader/status
 /api/auto-trader/reset
 ```
+
+
+## Explosive Runner Engine
+
+The Explosive Runner Engine hunts rare premium-expansion moves such as 30%+, 50%+ and 100%+ option premium runs.
+
+Required live data:
+
+- option premium LTP
+- option-chain volume/OI
+- bid/ask spread
+- Greeks delta/gamma/theta/vega
+- IV expansion
+- underlying momentum
+- market profile/opening range
+
+Ideal data still missing for exact historical runner training:
+
+- historical option premium candles
+- tick-level option trades
+- level-2 DOM depth
+- aggressor side
+- multi-strike gamma exposure history
+
+Runner training endpoints:
+
+```text
+/api/ai-learning/train-runner?symbol=NIFTY&target_trades=1000
+/api/ai-learning/train-runner?symbol=SENSEX&target_trades=1000
+/api/ai-learning/train-runner-both?target_trades=1000
+```
+
+Until historical option premium candles are available, runner training is marked as proxy-based from real Upstox index candles.

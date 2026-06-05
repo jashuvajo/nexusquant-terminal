@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core.config import Settings
 from app.services.ai_engine import TradeQualityScorer
+from app.services.explosive_runner import ExplosiveRunnerEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import adaptive_settings
 from app.services.session import IST, MarketPhase, current_session_state
@@ -210,6 +211,23 @@ class RealTimeMarketEngine:
         selected_md = selected_option.get("market_data") or {}
         selected_instrument = selected_option.get("instrument_key")
         selected_ltp = as_float(selected_md.get("ltp"))
+        runner_signal = ExplosiveRunnerEngine().evaluate(
+            symbol=selected_symbol,
+            side=selected_side,
+            strike=atm_strike,
+            expiry=expiry,
+            instrument_key=selected_instrument,
+            premium=selected_ltp,
+            selected_md=selected_md,
+            greeks=greeks,
+            orderflow=orderflow,
+            spread_quality=spread_quality,
+            volume_state=volume_state,
+            heatmap=heatmap,
+            market_profile=market_profile,
+            entry_model=entry_model,
+            tqs=tqs,
+        )
         current = PreviousTick(spot=spot, selected_ltp=selected_ltp, selected_volume=as_int(selected_md.get("volume")), timestamp=datetime.now(timezone.utc))
         self.previous[selected_symbol] = current
 
@@ -234,6 +252,7 @@ class RealTimeMarketEngine:
             pressure_mode=pressure_mode,
             entry_model=entry_model,
             optimized_profile=optimized_profile,
+            runner_signal=runner_signal,
         )
         execution_allowed = bool(
             self.settings.enable_live_trading
@@ -292,6 +311,7 @@ class RealTimeMarketEngine:
             "noTradeZones": no_trade_zones,
             "tqsBreakdown": tqs_breakdown,
             "entryModel": entry_model,
+            "explosiveRunner": runner_signal,
             "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
@@ -1116,6 +1136,7 @@ class RealTimeMarketEngine:
         volume_state: dict[str, Any],
         entry_model: dict[str, Any],
         optimized_profile: dict[str, Any],
+        runner_signal: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
@@ -1141,6 +1162,8 @@ class RealTimeMarketEngine:
                 "effectiveVolume": volume_state.get("effectiveVolume", 0),
                 "entryModel": entry_model,
                 "optimizedProfile": optimized_profile,
+                "strategyType": "EXPLOSIVE_RUNNER" if (runner_signal or {}).get("candidate") else "SCALP",
+                "runnerSignal": runner_signal,
                 "tqs": tqs,
                 "confidence": confidence,
                 "bias": option_bias.get("direction"),

@@ -74,6 +74,21 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
         <MetricCard label="Size Multiplier" value={`${snapshot.strategy.sizeMultiplier}x`} helper={`TQS threshold ${snapshot.strategy.threshold}`} tone="emerald" />
       </div>
       <TradingCapitalControl snapshot={snapshot} />
+      {snapshot.explosiveRunner && (
+        <div className={`mt-5 rounded-2xl border p-4 text-sm ${snapshot.explosiveRunner.candidate ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-100' : 'border-slate-700 bg-slate-950/60 text-slate-300'}`}>
+          <p className="font-bold uppercase tracking-[0.2em]">Explosive Runner Engine | {snapshot.explosiveRunner.confidence}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-4">
+            <span>Score <b>{snapshot.explosiveRunner.score}</b></span>
+            <span>Target <b>{snapshot.explosiveRunner.targetPremiumPct}%</b></span>
+            <span>Stop <b>{snapshot.explosiveRunner.hardStopPct}%</b></span>
+            <span>Trail <b>{snapshot.explosiveRunner.trailPct}%</b></span>
+          </div>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs">
+            {snapshot.explosiveRunner.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+          </ul>
+          <p className="mt-3 text-xs text-amber-200/80">Ideal missing data: {Array.isArray(snapshot.explosiveRunner.dataStatus.idealMissing) ? snapshot.explosiveRunner.dataStatus.idealMissing.join(', ') : 'n/a'}</p>
+        </div>
+      )}
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <ScoreBar label="Momentum Expansion" value={snapshot.orderflow.breakoutVelocity} />
         <ScoreBar label="Liquidity Confirmation" value={snapshot.orderflow.liquidityShift} />

@@ -49,6 +49,7 @@ class PaperTrade:
     slippage_estimate: float
     opened_at: str
     mode: str
+    strategy_type: str = "SCALP"
     status: str = "OPEN"
     exit_price: float | None = None
     exit_reason: str | None = None
@@ -71,6 +72,7 @@ class PaperTrade:
             "slippageEstimate": self.slippage_estimate,
             "openedAt": self.opened_at,
             "mode": self.mode,
+            "strategyType": self.strategy_type,
             "status": self.status,
             "exitPrice": self.exit_price,
             "exitReason": self.exit_reason,
@@ -308,6 +310,7 @@ class AutoTraderEngine:
             slippage_estimate=float(quality["slippageEstimate"]),
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
+            strategy_type=str(candidate.get("strategyType") or "SCALP"),
         )
         trade.lifecycle.extend([
             LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], quality),
