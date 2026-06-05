@@ -120,22 +120,35 @@ class HistoricalTrainer:
     ) -> dict[str, Any]:
         target = target_trades or self.settings.historical_training_target_trades
         underlying_key = self.settings.instrument_key_for(symbol)
-        expiry = expiry_date or self.settings.expiry_for(symbol)
+        requested_expiry = expiry_date or self.settings.expiry_for(symbol)
+        warnings: list[str] = []
+        today = date.today()
+        expiry = requested_expiry if self._valid_date(requested_expiry) else None
+        if requested_expiry and not expiry:
+            warnings.append(f"Ignored invalid expiry value: {requested_expiry}")
+        contracts: list[dict[str, Any]] = []
+        if expiry:
+            try:
+                contracts_payload = await self.client.option_contracts(underlying_key, expiry)
+                contracts = contracts_payload.get("data") or []
+            except Exception as exc:
+                warnings.append(f"Configured expiry {expiry} rejected by Upstox: {exc}")
+                expiry = None
         if not expiry:
             contracts_payload = await self.client.option_contracts(underlying_key)
-            expiries = sorted({str(item.get("expiry")) for item in contracts_payload.get("data", []) if item.get("expiry")})
+            all_contracts = contracts_payload.get("data") or []
+            expiries = sorted({str(item.get("expiry")) for item in all_contracts if self._valid_date(str(item.get("expiry")))})
             if not expiries:
-                return {"available": False, "reason": f"No Upstox option expiries returned for {symbol}", "samples": 0}
-            expiry = expiries[0]
-            contracts = [item for item in contracts_payload.get("data", []) if item.get("expiry") == expiry]
-        else:
-            contracts_payload = await self.client.option_contracts(underlying_key, expiry)
-            contracts = contracts_payload.get("data") or []
-        today = date.today()
+                return {"available": False, "reason": f"No Upstox option expiries returned for {symbol}", "samples": 0, "warnings": warnings}
+            future_expiries = [item for item in expiries if date.fromisoformat(item) >= today]
+            expiry = future_expiries[0] if future_expiries else expiries[0]
+            contracts = [item for item in all_contracts if item.get("expiry") == expiry]
+        if not contracts:
+            return {"available": False, "reason": f"No option contracts returned for {symbol} expiry {expiry}", "samples": 0, "warnings": warnings}
         selected_contracts = self._select_option_contracts(contracts, max_contracts)
         samples: list[dict[str, Any]] = []
         contract_results: list[dict[str, Any]] = []
-        errors: list[str] = []
+        errors: list[str] = list(warnings)
         for contract in selected_contracts:
             instrument_key = contract.get("instrument_key")
             if not instrument_key:
@@ -174,8 +187,8 @@ class HistoricalTrainer:
             "symbol": symbol,
             "underlyingInstrumentKey": underlying_key,
             "expiry": expiry,
-            "fromDate": from_date,
-            "toDate": to_date,
+            "fromDate": from_date or "auto_contract_window",
+            "toDate": to_date or "auto_contract_window",
             "targetTrades": target,
             "generatedTrades": len(samples),
             "enoughSamples": len(samples) >= target,
@@ -184,6 +197,15 @@ class HistoricalTrainer:
             "learning": learning,
             "note": "Uses actual Upstox historical candles for option instrument keys. If no samples are produced, Upstox option premium history is unavailable for the selected contracts/date range.",
         }
+
+    def _valid_date(self, value: str | None) -> bool:
+        if not value:
+            return False
+        try:
+            date.fromisoformat(str(value))
+            return True
+        except ValueError:
+            return False
 
     def _contract_history_window(self, contract: dict[str, Any], from_date: str | None, to_date: str | None, today: date) -> tuple[str, str]:
         expiry_raw = contract.get("expiry") or contract.get("expiry_date")
