@@ -76,7 +76,7 @@ class RealTimeMarketEngine:
         required_params = {"chop_filter", "volume_state", "trading_capital"}
         signature_ok = required_params.issubset(suggested_params)
         precision_params = set(signature(self._precision_entry_checklist).parameters)
-        precision_signature_ok = "optimized_profile" in precision_params
+        precision_signature_ok = {"optimized_profile", "runner_signal"}.issubset(precision_params)
         source_has_suggested_profile_call = self._source_has_call_keyword("_suggested_trades", "optimized_profile")
         return {
             "ok": not missing and order_ok and signature_ok and precision_signature_ok and source_has_suggested_profile_call,
@@ -942,8 +942,10 @@ class RealTimeMarketEngine:
         pressure_mode: dict[str, Any],
         entry_model: dict[str, Any],
         optimized_profile: dict[str, Any] | None = None,
+        runner_signal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         optimized_profile = optimized_profile or {}
+        runner_signal = runner_signal or {}
         entry_model_required = optimized_profile.get("entryModel", "breakout") in {"retest", "orb_retest"}
         checks = [
             {"name": "TQS above institutional floor", "passed": tqs >= max(threshold, 68), "value": tqs, "required": max(threshold, 68), "critical": True},
@@ -960,6 +962,7 @@ class RealTimeMarketEngine:
             {"name": "Profile acceptance", "passed": spot >= market_profile.get("val", spot) and spot <= market_profile.get("vah", spot), "value": spot, "required": f"{market_profile.get('val')} - {market_profile.get('vah')}", "critical": False},
             {"name": "Stored profile loaded", "passed": bool(optimized_profile.get("mode")), "value": optimized_profile.get("mode"), "required": "optimized symbol profile", "critical": True},
             {"name": "Retest confirmation", "passed": (not entry_model_required) or bool(entry_model.get("retestConfirmed")), "value": entry_model.get("state"), "required": optimized_profile.get("entryModel", "breakout"), "critical": bool(entry_model_required)},
+            {"name": "Runner context", "passed": bool(runner_signal.get("candidate")) or runner_signal.get("confidence") in {"LOW", "MEDIUM", "HIGH", None}, "value": runner_signal.get("confidence"), "required": "runner evaluated", "critical": False},
             {"name": "No failed breakout", "passed": not bool(entry_model.get("failedBreakout")), "value": entry_model.get("failedBreakout"), "required": False, "critical": True},
         ]
         critical_failed = [check for check in checks if check["critical"] and not check["passed"]]

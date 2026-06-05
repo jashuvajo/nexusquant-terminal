@@ -141,7 +141,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.9.0-news-engine",
+        "apiVersion": "0.9.1-runner-checklist-signature-fix",
         "runtimeValidation": engine.validate_runtime(),
         "optimizerValidation": get_strategy_optimizer(settings, get_upstox(settings, auth_service)).validate_runtime(),
         "environment": settings.environment,
