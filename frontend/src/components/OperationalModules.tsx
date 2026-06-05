@@ -193,13 +193,15 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
       )}
       {snapshot.adaptiveExit && (
         <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4 text-sm text-emerald-100">
-          <p className="font-bold uppercase tracking-[0.2em]">Adaptive Exit Engine</p>
+          <p className="font-bold uppercase tracking-[0.2em]">Adaptive Exit Engine {snapshot.adaptiveExit.executionStyle ? `| ${snapshot.adaptiveExit.executionStyle.replaceAll('_', ' ')}` : ''}</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-4">
             <span>Target <b>{snapshot.adaptiveExit.targetPoints}</b></span>
             <span>Stop <b>{snapshot.adaptiveExit.stopPoints}</b></span>
             <span>Trail <b>{snapshot.adaptiveExit.trailPoints}</b></span>
             <span>Partial <b>{snapshot.adaptiveExit.partialExitAt}</b></span>
             <span>ATR <b>{snapshot.adaptiveExit.atrPoints ?? 0}</b></span>
+            <span>Partial <b>{Math.round((snapshot.adaptiveExit.partialExitPct ?? 0) * 100)}%</b></span>
+            <span>Runner <b>{Math.round((snapshot.adaptiveExit.runnerPct ?? 0) * 100)}%</b></span>
           </div>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs">
             {snapshot.adaptiveExit.rules.filter((rule) => rule.active).map((rule) => <li key={rule.name}>{rule.name}: {rule.action}</li>)}

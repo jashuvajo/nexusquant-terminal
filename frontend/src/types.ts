@@ -282,10 +282,13 @@ export interface PrecisionChecklistState {
 }
 
 export interface AdaptiveExitState {
+  executionStyle?: string;
   targetPoints: number;
   stopPoints: number;
   trailPoints: number;
   partialExitAt: number;
+  partialExitPct?: number;
+  runnerPct?: number;
   atrPoints?: number;
   rules: Array<{ name: string; active: boolean; action: string }>;
 }

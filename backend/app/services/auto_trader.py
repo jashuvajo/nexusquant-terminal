@@ -322,9 +322,17 @@ class AutoTraderEngine:
             current = float((candidate or {}).get("lastPremium") or trade.entry_price)
             age = self._age_seconds(trade.opened_at)
             reason = None
-            if current >= trade.entry_price + self.settings.paper_target_points:
+            profile = (candidate or {}).get("optimizedProfile") or {}
+            target_points = float(profile.get("targetPoints") or self.settings.paper_target_points)
+            stop_points = float(profile.get("stopPoints") or self.settings.paper_stop_points)
+            style = str(profile.get("executionStyle") or "GENERIC")
+            if style == "RUNNER_BREAKOUT":
+                target_points = max(target_points, self.settings.paper_target_points * 1.2)
+            elif style == "HIGH_WIN_SCALP":
+                target_points = min(target_points, self.settings.paper_target_points)
+            if current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
-            elif current <= trade.entry_price - self.settings.paper_stop_points:
+            elif current <= trade.entry_price - stop_points:
                 reason = "momentum decay or delta reversal stop"
             elif age >= self.settings.max_paper_trade_seconds:
                 reason = "time stop"

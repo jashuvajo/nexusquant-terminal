@@ -72,6 +72,10 @@ class Settings(BaseSettings):
             return {
                 "symbol": "SENSEX",
                 "mode": "runner_profile",
+                "executionStyle": "RUNNER_BREAKOUT",
+                "holdBias": "extend_winners",
+                "partialExitPct": 0.35,
+                "runnerPct": 0.65,
                 "minTqs": self.sensex_opt_min_tqs,
                 "breakoutAtr": self.sensex_opt_breakout_atr,
                 "volumeMultiplier": self.sensex_opt_volume_multiplier,
@@ -83,6 +87,10 @@ class Settings(BaseSettings):
         return {
             "symbol": "NIFTY",
             "mode": "high_win_scalp_profile",
+            "executionStyle": "HIGH_WIN_SCALP",
+            "holdBias": "fast_capture",
+            "partialExitPct": 0.7,
+            "runnerPct": 0.3,
             "minTqs": self.nifty_opt_min_tqs,
             "breakoutAtr": self.nifty_opt_breakout_atr,
             "volumeMultiplier": self.nifty_opt_volume_multiplier,

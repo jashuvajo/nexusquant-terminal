@@ -931,9 +931,19 @@ class RealTimeMarketEngine:
         target_base = float(optimized_profile.get("targetPoints") or self.settings.paper_target_points)
         stop_base = float(optimized_profile.get("stopPoints") or self.settings.paper_stop_points)
         trail_atr = float(optimized_profile.get("trailAtr") or 0.35)
+        style = str(optimized_profile.get("executionStyle") or "GENERIC")
+        partial_pct = float(optimized_profile.get("partialExitPct") or 0.5)
+        runner_pct = float(optimized_profile.get("runnerPct") or 0.5)
         target = max(target_base, premium * 0.04, atr_points * 0.8) if premium else max(target_base, atr_points * 0.8)
         stop = max(stop_base, premium * 0.025, atr_points * 0.5) if premium else max(stop_base, atr_points * 0.5)
-        trail = max(1.0, target * 0.45, atr_points * trail_atr)
+        if style == "HIGH_WIN_SCALP":
+            target = min(target, target_base)
+            trail = max(0.75, atr_points * trail_atr, target * 0.35)
+        elif style == "RUNNER_BREAKOUT":
+            target = max(target, target_base, atr_points * 1.2)
+            trail = max(1.5, atr_points * trail_atr, target * 0.55)
+        else:
+            trail = max(1.0, target * 0.45, atr_points * trail_atr)
         rules = [
             {"name": "Momentum decay exit", "active": orderflow.get("breakoutVelocity", 0) < 10, "action": "tighten trail or exit"},
             {"name": "Delta reversal exit", "active": (side == "CALL" and orderflow.get("deltaVelocity", 0) < -15) or (side == "PUT" and orderflow.get("deltaVelocity", 0) > 15), "action": "exit on reversal"},
@@ -942,7 +952,17 @@ class RealTimeMarketEngine:
             {"name": "Theta/IV caution", "active": abs(greeks.get("theta", 0)) > 5 or greeks.get("ivExpansion", 0) > 70, "action": "shorten hold time"},
             {"name": "Pressure emergency flatten", "active": pressure_mode.get("level") == "CRITICAL" or safe_mode, "action": "flatten or manage only"},
         ]
-        return {"targetPoints": round(target, 2), "stopPoints": round(stop, 2), "trailPoints": round(trail, 2), "partialExitAt": round(target * 0.6, 2), "atrPoints": round(atr_points, 2), "rules": rules}
+        return {
+            "executionStyle": style,
+            "targetPoints": round(target, 2),
+            "stopPoints": round(stop, 2),
+            "trailPoints": round(trail, 2),
+            "partialExitAt": round(target * partial_pct, 2),
+            "partialExitPct": partial_pct,
+            "runnerPct": runner_pct,
+            "atrPoints": round(atr_points, 2),
+            "rules": rules,
+        }
 
     def _no_trade_zones(
         self,

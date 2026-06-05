@@ -906,3 +906,13 @@ Endpoint:
 ```text
 /api/risk/optimized-profiles
 ```
+
+
+## Symbol-specific execution styles
+
+Stored optimized profiles now drive different execution behavior per index:
+
+- `NIFTY`: `HIGH_WIN_SCALP` with faster capture, larger partial exit, smaller runner.
+- `SENSEX`: `RUNNER_BREAKOUT` with bigger target, longer trail, larger runner portion.
+
+These styles are included in `optimizedProfile` and `adaptiveExit` inside market snapshots.
