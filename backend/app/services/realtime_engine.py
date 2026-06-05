@@ -218,7 +218,7 @@ class RealTimeMarketEngine:
         selected_md = selected_option.get("market_data") or {}
         selected_instrument = selected_option.get("instrument_key")
         selected_ltp = as_float(selected_md.get("ltp"))
-        runner_signal = ExplosiveRunnerEngine().evaluate(
+        runner_signal = ExplosiveRunnerEngine(option_premium_history_available=self.settings.option_premium_history_available).evaluate(
             symbol=selected_symbol,
             side=selected_side,
             strike=atm_strike,

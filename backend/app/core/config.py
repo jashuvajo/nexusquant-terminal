@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     trading_capital_default: float = 0.0
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
+    option_premium_history_available: bool = True
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35

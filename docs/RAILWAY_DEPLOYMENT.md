@@ -1036,7 +1036,7 @@ Required live data:
 
 Ideal data still missing for exact historical runner training:
 
-- historical option premium candles
+- historical option premium candles (available on this Upstox account after exact optimizer confirmation)
 - tick-level option trades
 - level-2 DOM depth
 - aggressor side
@@ -1050,7 +1050,7 @@ Runner training endpoints:
 /api/ai-learning/train-runner-both?target_trades=1000
 ```
 
-Until historical option premium candles are available, runner training is marked as proxy-based from real Upstox index candles.
+Historical option premium candles are available on this Upstox account for tested contracts. Proxy runner training remains available as a fallback, but exact option-premium training/optimization should be preferred.
 
 
 ## News/event intelligence

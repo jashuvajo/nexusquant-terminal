@@ -86,7 +86,8 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs">
             {snapshot.explosiveRunner.reasons.map((reason) => <li key={reason}>{reason}</li>)}
           </ul>
-          <p className="mt-3 text-xs text-amber-200/80">Ideal missing data: {Array.isArray(snapshot.explosiveRunner.dataStatus.idealMissing) ? snapshot.explosiveRunner.dataStatus.idealMissing.join(', ') : 'n/a'}</p>
+          <p className="mt-3 text-xs text-emerald-200/80">Ideal available data: {Array.isArray(snapshot.explosiveRunner.dataStatus.idealAvailable) ? snapshot.explosiveRunner.dataStatus.idealAvailable.join(', ') || 'n/a' : 'n/a'}</p>
+          <p className="mt-1 text-xs text-amber-200/80">Still missing: {Array.isArray(snapshot.explosiveRunner.dataStatus.idealMissing) ? snapshot.explosiveRunner.dataStatus.idealMissing.join(', ') || 'none' : 'n/a'}</p>
         </div>
       )}
       <div className="mt-5 grid gap-4 md:grid-cols-2">

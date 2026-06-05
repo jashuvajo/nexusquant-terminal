@@ -11,12 +11,10 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 class ExplosiveRunnerEngine:
-    """Detects rare option premium expansion opportunities.
+    """Detects rare option premium expansion opportunities."""
 
-    Uses exact option premium LTP and current option-chain structure. Historical
-    runner training can be exact only when option premium history is available;
-    otherwise training is proxy-based from underlying candles.
-    """
+    def __init__(self, option_premium_history_available: bool = False) -> None:
+        self.option_premium_history_available = option_premium_history_available
 
     REQUIRED_DATA = [
         "option premium LTP",
@@ -102,7 +100,8 @@ class ExplosiveRunnerEngine:
             score += 2
             reasons.append("retest confirmed")
 
-        missing_ideal = list(self.IDEAL_DATA)
+        missing_ideal = [item for item in self.IDEAL_DATA if not (item == "historical option premium candles" and self.option_premium_history_available)]
+        ideal_available = ["historical option premium candles"] if self.option_premium_history_available else []
         confidence = "LOW"
         if score >= 75 and tqs >= 70:
             confidence = "HIGH"
@@ -134,8 +133,9 @@ class ExplosiveRunnerEngine:
             "reasons": reasons,
             "dataStatus": {
                 "requiredAvailable": self.REQUIRED_DATA,
+                "idealAvailable": ideal_available,
                 "idealMissing": missing_ideal,
-                "trainingMode": "exact_live_current_snapshot_proxy_historical_until_option_premium_history_available",
+                "trainingMode": "exact_option_premium_history_available" if self.option_premium_history_available else "exact_live_current_snapshot_proxy_historical_until_option_premium_history_available",
             },
             "metrics": {
                 "volume": volume,
