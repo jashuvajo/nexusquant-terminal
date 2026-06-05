@@ -19,6 +19,7 @@ from app.services.ltp_range_analyzer import LtpRangeAnalyzer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
+from app.services.option_premium_optimizer import OptionPremiumOptimizer
 from app.services.strategy_optimizer import StrategyOptimizer
 from app.services.session import current_session_state
 from app.services.trading_control import TradingControl
@@ -109,6 +110,10 @@ def get_strategy_optimizer(settings: Settings = Depends(get_settings), client: U
     return StrategyOptimizer(settings, client)
 
 
+def get_option_premium_optimizer(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> OptionPremiumOptimizer:
+    return OptionPremiumOptimizer(settings, client)
+
+
 def get_market_engine(
     settings: Settings = Depends(get_settings),
     client: UpstoxClient = Depends(get_upstox),
@@ -143,7 +148,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.9.2-ltp-range-analyzer",
+        "apiVersion": "0.9.4-option-premium-optimizer",
         "runtimeValidation": engine.validate_runtime(),
         "optimizerValidation": get_strategy_optimizer(settings, get_upstox(settings, auth_service)).validate_runtime(),
         "environment": settings.environment,
@@ -179,6 +184,8 @@ async def deployment_status(
             "/api/strategy-optimizer/run-both",
             "/api/strategy-optimizer/latest",
             "/api/analytics/ltp-ranges",
+            "/api/option-premium-optimizer/run",
+            "/api/option-premium-optimizer/run-both",
             "/api/event-journal/recent",
         ],
     }
@@ -448,6 +455,46 @@ async def event_journal_record(request: EventRecordRequest, journal: EventJourna
 @router.get("/strategy-optimizer/latest")
 async def strategy_optimizer_latest(optimizer: StrategyOptimizer = Depends(get_strategy_optimizer)) -> dict:
     return await optimizer.latest()
+
+
+@router.get("/option-premium-optimizer/run")
+async def option_premium_optimizer_run(
+    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    target_samples: int = 500,
+    expiry_date: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_contracts: int = 40,
+    max_param_sets: int = 120,
+    objective: str = "high_win_scalp",
+    optimizer: OptionPremiumOptimizer = Depends(get_option_premium_optimizer),
+) -> dict:
+    try:
+        return await optimizer.optimize(symbol, target_samples, expiry_date, from_date, to_date, max_contracts, max_param_sets, objective)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/option-premium-optimizer/run-both")
+async def option_premium_optimizer_run_both(
+    target_samples: int = 500,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_contracts: int = 40,
+    max_param_sets: int = 120,
+    objective: str = "high_win_scalp",
+    optimizer: OptionPremiumOptimizer = Depends(get_option_premium_optimizer),
+) -> dict:
+    results = {}
+    errors = {}
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            results[symbol] = await optimizer.optimize(symbol, target_samples, None, from_date, to_date, max_contracts, max_param_sets, objective)
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            errors[symbol] = str(exc)
+    if not results:
+        raise HTTPException(status_code=503, detail=errors)
+    return {"results": results, "errors": errors}
 
 
 @router.get("/analytics/ltp-ranges")

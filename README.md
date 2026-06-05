@@ -1061,3 +1061,26 @@ If Upstox provides historical candles for option instrument keys, train exact pr
 This uses option contract instrument keys such as `NSE_FO|...` / `BSE_FO|...` and looks for premium moves of +30%, +50%, +100%.
 
 If Upstox does not provide historical option premium candles or entitlement is missing, response returns `available=false` or low sample counts with explicit errors.
+
+
+## Exact option premium optimizer
+
+When Upstox option premium candles are available, optimize exact premium runner settings:
+
+```text
+/api/option-premium-optimizer/run?symbol=NIFTY&target_samples=500
+/api/option-premium-optimizer/run?symbol=SENSEX&target_samples=500
+/api/option-premium-optimizer/run-both?target_samples=500
+```
+
+It searches:
+
+- premium LTP range
+- premium breakout %
+- volume multiplier
+- target %
+- stop %
+- trail %
+- max hold bars
+
+This is the exact optimizer for 15→150 style premium runners.
