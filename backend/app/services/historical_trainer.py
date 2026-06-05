@@ -132,8 +132,6 @@ class HistoricalTrainer:
             contracts_payload = await self.client.option_contracts(underlying_key, expiry)
             contracts = contracts_payload.get("data") or []
         today = date.today()
-        to_date = to_date or today.isoformat()
-        from_date = from_date or (today - timedelta(days=28)).isoformat()
         selected_contracts = self._select_option_contracts(contracts, max_contracts)
         samples: list[dict[str, Any]] = []
         contract_results: list[dict[str, Any]] = []
@@ -142,9 +140,10 @@ class HistoricalTrainer:
             instrument_key = contract.get("instrument_key")
             if not instrument_key:
                 continue
+            contract_from, contract_to = self._contract_history_window(contract, from_date, to_date, today)
             contract_candles: list[dict[str, Any]] = []
             contract_samples: list[dict[str, Any]] = []
-            for chunk_from, chunk_to in self._date_chunks(from_date, to_date, interval):
+            for chunk_from, chunk_to in self._date_chunks(contract_from, contract_to, interval):
                 try:
                     payload = await self.client.historical_candles(instrument_key, "minutes", interval, chunk_to, chunk_from)
                     chunk_candles = self._parse_candles(payload)
@@ -158,6 +157,8 @@ class HistoricalTrainer:
                     errors.append(f"{instrument_key} {chunk_from}->{chunk_to}: {exc}")
             contract_results.append({
                 "instrumentKey": instrument_key,
+                "fromDate": contract_from,
+                "toDate": contract_to,
                 "tradingSymbol": contract.get("trading_symbol") or contract.get("name"),
                 "strike": contract.get("strike_price"),
                 "optionType": contract.get("option_type"),
@@ -183,6 +184,19 @@ class HistoricalTrainer:
             "learning": learning,
             "note": "Uses actual Upstox historical candles for option instrument keys. If no samples are produced, Upstox option premium history is unavailable for the selected contracts/date range.",
         }
+
+    def _contract_history_window(self, contract: dict[str, Any], from_date: str | None, to_date: str | None, today: date) -> tuple[str, str]:
+        expiry_raw = contract.get("expiry") or contract.get("expiry_date")
+        try:
+            expiry = date.fromisoformat(str(expiry_raw)) if expiry_raw else today
+        except ValueError:
+            expiry = today
+        end = date.fromisoformat(to_date) if to_date else min(today, expiry)
+        start = date.fromisoformat(from_date) if from_date else end - timedelta(days=28)
+        end = min(end, today, expiry)
+        if start > end:
+            start = max(end - timedelta(days=7), date(2022, 1, 1))
+        return start.isoformat(), end.isoformat()
 
     def _select_option_contracts(self, contracts: list[dict[str, Any]], max_contracts: int) -> list[dict[str, Any]]:
         def sort_key(item: dict[str, Any]) -> tuple[int, float]:
