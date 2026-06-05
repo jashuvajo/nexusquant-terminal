@@ -72,11 +72,14 @@ class RealTimeMarketEngine:
         suggested_params = set(signature(self._suggested_trades).parameters)
         required_params = {"chop_filter", "volume_state", "trading_capital"}
         signature_ok = required_params.issubset(suggested_params)
+        precision_params = set(signature(self._precision_entry_checklist).parameters)
+        precision_signature_ok = "optimized_profile" in precision_params
         return {
-            "ok": not missing and order_ok and signature_ok,
+            "ok": not missing and order_ok and signature_ok and precision_signature_ok,
             "missingHelpers": missing,
             "regimeBeforeChopFilter": order_ok,
             "suggestedTradesSignatureOk": signature_ok,
+            "precisionChecklistSignatureOk": precision_signature_ok,
         }
 
     def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine, trading_control: TradingControl | None = None) -> None:
@@ -893,7 +896,10 @@ class RealTimeMarketEngine:
         no_trade_zones: dict[str, Any],
         pressure_mode: dict[str, Any],
         entry_model: dict[str, Any],
+        optimized_profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        optimized_profile = optimized_profile or {}
+        entry_model_required = optimized_profile.get("entryModel", "breakout") in {"retest", "orb_retest"}
         checks = [
             {"name": "TQS above institutional floor", "passed": tqs >= max(threshold, 68), "value": tqs, "required": max(threshold, 68), "critical": True},
             {"name": "Spread quality", "passed": spread_quality >= 85, "value": spread_quality, "required": 85, "critical": True},
@@ -907,7 +913,8 @@ class RealTimeMarketEngine:
             {"name": "Pressure not critical", "passed": pressure_mode.get("level") != "CRITICAL", "value": pressure_mode.get("level"), "required": "NORMAL/ELEVATED", "critical": True},
             {"name": "Option bias aligned", "passed": (selected_side == "CALL" and option_bias.get("direction") == "BULLISH") or (selected_side == "PUT" and option_bias.get("direction") == "BEARISH"), "value": option_bias.get("direction"), "required": selected_side, "critical": False},
             {"name": "Profile acceptance", "passed": spot >= market_profile.get("val", spot) and spot <= market_profile.get("vah", spot), "value": spot, "required": f"{market_profile.get('val')} - {market_profile.get('vah')}", "critical": False},
-            {"name": "Retest confirmation", "passed": bool(entry_model.get("retestConfirmed")), "value": entry_model.get("state"), "required": "breakout-retest-hold", "critical": False},
+            {"name": "Stored profile loaded", "passed": bool(optimized_profile.get("mode")), "value": optimized_profile.get("mode"), "required": "optimized symbol profile", "critical": True},
+            {"name": "Retest confirmation", "passed": (not entry_model_required) or bool(entry_model.get("retestConfirmed")), "value": entry_model.get("state"), "required": optimized_profile.get("entryModel", "breakout"), "critical": bool(entry_model_required)},
             {"name": "No failed breakout", "passed": not bool(entry_model.get("failedBreakout")), "value": entry_model.get("failedBreakout"), "required": False, "critical": True},
         ]
         critical_failed = [check for check in checks if check["critical"] and not check["passed"]]
