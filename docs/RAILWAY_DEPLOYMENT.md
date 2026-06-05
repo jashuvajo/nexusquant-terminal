@@ -978,3 +978,21 @@ Stored optimized profiles now drive different execution behavior per index:
 - `SENSEX`: `RUNNER_BREAKOUT` with bigger target, longer trail, larger runner portion.
 
 These styles are included in `optimizedProfile` and `adaptiveExit` inside market snapshots.
+
+
+## Paper execution independent of live mode
+
+Paper/shadow trading can run regardless of live auto-trading flags:
+
+```text
+PAPER_TRADING=true
+SHADOW_TRADE_ALL_SIGNALS=true
+PAPER_TRADING_RESPECTS_STOP=false
+```
+
+This means:
+
+- live broker orders still require all execution gates
+- paper trades open for learning/visibility even when live execution is off or blocked
+- rejected signals are still recorded as shadow paper candidates when enabled
+- STOP can optionally pause paper trades if `PAPER_TRADING_RESPECTS_STOP=true`

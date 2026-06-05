@@ -122,21 +122,24 @@ class AutoTraderEngine:
             quality = self._pre_trade_quality(candidate)
             if quality["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
-                continue
-            if trading_control.get("autoTradingStopped"):
+                if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals):
+                    continue
+                quality = {**quality, "shadowOverride": True, "reason": f"SHADOW PAPER despite rejection: {quality['reason']}"}
+            if trading_control.get("autoTradingStopped") and self.settings.paper_trading_respects_stop:
                 skipped.append({"candidate": candidate.get("id"), "reason": "manual stop active", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
                 opened = self._open_paper_trade(candidate, quality)
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
-
         exits = self._update_open_paper(snapshots)
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
         profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0))
         return {
             "paperTrading": self.settings.paper_trading,
+            "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
+            "paperTradingRespectsStop": self.settings.paper_trading_respects_stop,
             "liveTradingEnabled": self.settings.enable_live_trading,
             "autoTradingStopped": bool(trading_control.get("autoTradingStopped")),
             "capital": capital,
@@ -160,6 +163,8 @@ class AutoTraderEngine:
     def status(self) -> dict[str, Any]:
         return {
             "paperTrading": self.settings.paper_trading,
+            "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
+            "paperTradingRespectsStop": self.settings.paper_trading_respects_stop,
             "openPaperTrades": [trade.to_dict() for trade in self.open_paper.values()],
             "closedPaperTrades": [trade.to_dict() for trade in list(self.closed_paper)[-25:]],
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],

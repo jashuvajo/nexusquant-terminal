@@ -248,7 +248,7 @@ class RealTimeMarketEngine:
             and selected_instrument
             and selected_ltp > 0
         )
-        trade_mode = "AUTO_EXECUTION_READY" if execution_allowed else "ANALYSIS_BACKTEST_ONLY"
+        trade_mode = "AUTO_EXECUTION_READY" if execution_allowed else "PAPER_EXECUTION" if self.settings.paper_trading else "ANALYSIS_BACKTEST_ONLY"
         backtest_metrics = self._backtest_metrics(candles_list, tqs, spread_quality, volume_state)
         production_readiness = self._production_readiness(backtest_metrics, tqs, volume_state, self._drawdown_pct(portfolio))
         suggested_trades = self._suggested_trades(

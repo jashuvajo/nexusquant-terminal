@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     paper_target_points: float = 5.0
     ai_learning_enabled: bool = True
     paper_trading: bool = True
+    paper_trading_respects_stop: bool = False
+    shadow_trade_all_signals: bool = True
     market_poll_seconds: float = 1.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
