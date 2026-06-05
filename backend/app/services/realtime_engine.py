@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+import ast
 from inspect import signature
 from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
@@ -74,13 +75,28 @@ class RealTimeMarketEngine:
         signature_ok = required_params.issubset(suggested_params)
         precision_params = set(signature(self._precision_entry_checklist).parameters)
         precision_signature_ok = "optimized_profile" in precision_params
+        source_has_suggested_profile_call = self._source_has_call_keyword("_suggested_trades", "optimized_profile")
         return {
-            "ok": not missing and order_ok and signature_ok and precision_signature_ok,
+            "ok": not missing and order_ok and signature_ok and precision_signature_ok and source_has_suggested_profile_call,
             "missingHelpers": missing,
             "regimeBeforeChopFilter": order_ok,
             "suggestedTradesSignatureOk": signature_ok,
             "precisionChecklistSignatureOk": precision_signature_ok,
+            "suggestedTradesProfileCallOk": source_has_suggested_profile_call,
         }
+
+    def _source_has_call_keyword(self, method_name: str, keyword: str) -> bool:
+        try:
+            tree = ast.parse(Path(__file__).read_text())
+        except Exception:
+            return False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == method_name:
+                return any(item.arg == keyword for item in node.keywords)
+        return False
 
     def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine, trading_control: TradingControl | None = None) -> None:
         self.settings = settings
@@ -253,6 +269,7 @@ class RealTimeMarketEngine:
             chop_filter=chop_filter,
             volume_state=volume_state,
             entry_model=entry_model,
+            optimized_profile=optimized_profile,
         )
 
         return {
