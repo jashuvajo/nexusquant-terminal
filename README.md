@@ -1088,13 +1088,13 @@ This is the exact optimizer for 15→150 style premium runners.
 
 ## Finnhub news provider
 
-Upstox News is the primary news provider for NexusQuant. Finnhub remains an optional fallback if Upstox News is unavailable.
+Finnhub is the primary news provider for NexusQuant. Upstox News remains an optional fallback if available.
 
 Railway variables:
 
 ```text
-NEWS_PROVIDER=upstox
-FINNHUB_API_KEY=optional_finnhub_fallback_key
+NEWS_PROVIDER=finnhub
+FINNHUB_API_KEY=your_finnhub_key
 NEWS_LOOKBACK_ITEMS=20
 ```
 

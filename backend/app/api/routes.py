@@ -220,17 +220,18 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
 
 @router.get("/market/news/{symbol}")
 async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
+    external = await NewsProvider(settings).fetch(symbol)
     upstox_payload = None
     upstox_error = None
-    try:
-        upstox_payload = await client.news_headlines(settings.instrument_key_for(symbol))
-    except (UpstoxAuthRequired, UpstoxDataError) as exc:
-        upstox_error = str(exc)
-    external = await NewsProvider(settings).fetch(symbol) if not upstox_payload else {"status": "not_used", "provider": "finnhub", "data": []}
-    payload = upstox_payload if upstox_payload else external
-    reason = None if upstox_payload or external.get("data") else upstox_error or external.get("reason")
+    if not external.get("data"):
+        try:
+            upstox_payload = await client.news_headlines(settings.instrument_key_for(symbol))
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            upstox_error = str(exc)
+    payload = external if external.get("data") else upstox_payload
+    reason = None if external.get("data") or upstox_payload else external.get("reason") or upstox_error
     state = NewsEngine().analyze(payload, reason)
-    state["providerStatus"] = {"primary": "upstox", "upstox": {"available": bool(upstox_payload), "error": upstox_error}, "external": external}
+    state["providerStatus"] = {"primary": "finnhub", "external": external, "upstox": {"available": bool(upstox_payload), "error": upstox_error}}
     return state
 
 
