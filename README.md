@@ -1046,3 +1046,18 @@ Find the best current option premium LTP range and optionally trigger historical
 The current premium range analysis uses real Upstox option-chain LTP, volume, OI, spread and Greeks.
 
 Historical training still uses real Upstox index candles unless exact historical option premium candles are available.
+
+
+## Exact option premium runner training
+
+If Upstox provides historical candles for option instrument keys, train exact premium runners:
+
+```text
+/api/ai-learning/train-option-runner?symbol=NIFTY&target_trades=5000
+/api/ai-learning/train-option-runner?symbol=SENSEX&target_trades=5000
+/api/ai-learning/train-option-runner-both?target_trades=5000
+```
+
+This uses option contract instrument keys such as `NSE_FO|...` / `BSE_FO|...` and looks for premium moves of +30%, +50%, +100%.
+
+If Upstox does not provide historical option premium candles or entitlement is missing, response returns `available=false` or low sample counts with explicit errors.

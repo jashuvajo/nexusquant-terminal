@@ -173,6 +173,8 @@ async def deployment_status(
             "/api/ai-learning/train-now",
             "/api/ai-learning/train-runner",
             "/api/ai-learning/train-runner-both",
+            "/api/ai-learning/train-option-runner",
+            "/api/ai-learning/train-option-runner-both",
             "/api/strategy-optimizer/run",
             "/api/strategy-optimizer/run-both",
             "/api/strategy-optimizer/latest",
@@ -547,6 +549,42 @@ async def ai_learning_train_now_get(
     trainer: HistoricalTrainer = Depends(get_historical_trainer),
 ) -> dict:
     return await ai_learning_train_now(target_trades, from_date, to_date, trainer)
+
+
+@router.get("/ai-learning/train-option-runner")
+async def ai_learning_train_option_runner(
+    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    target_trades: int | None = None,
+    expiry_date: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_contracts: int = 60,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    try:
+        return await trainer.train_option_runner(symbol, target_trades, expiry_date, from_date, to_date, 1, max_contracts)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/ai-learning/train-option-runner-both")
+async def ai_learning_train_option_runner_both(
+    target_trades: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_contracts: int = 60,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    results = {}
+    errors = {}
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            results[symbol] = await trainer.train_option_runner(symbol, target_trades, None, from_date, to_date, 1, max_contracts)
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            errors[symbol] = str(exc)
+    if not results:
+        raise HTTPException(status_code=503, detail=errors)
+    return {"results": results, "errors": errors}
 
 
 @router.get("/ai-learning/train-runner")

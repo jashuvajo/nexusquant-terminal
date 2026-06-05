@@ -108,6 +108,154 @@ class HistoricalTrainer:
             "note": "Runner training uses real Upstox index candles as proxy labels. Exact option premium runner training requires historical option premium candles.",
         }
 
+    async def train_option_runner(
+        self,
+        symbol: str = "NIFTY",
+        target_trades: int | None = None,
+        expiry_date: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        interval: int = 1,
+        max_contracts: int = 60,
+    ) -> dict[str, Any]:
+        target = target_trades or self.settings.historical_training_target_trades
+        underlying_key = self.settings.instrument_key_for(symbol)
+        expiry = expiry_date or self.settings.expiry_for(symbol)
+        if not expiry:
+            contracts_payload = await self.client.option_contracts(underlying_key)
+            expiries = sorted({str(item.get("expiry")) for item in contracts_payload.get("data", []) if item.get("expiry")})
+            if not expiries:
+                return {"available": False, "reason": f"No Upstox option expiries returned for {symbol}", "samples": 0}
+            expiry = expiries[0]
+            contracts = [item for item in contracts_payload.get("data", []) if item.get("expiry") == expiry]
+        else:
+            contracts_payload = await self.client.option_contracts(underlying_key, expiry)
+            contracts = contracts_payload.get("data") or []
+        today = date.today()
+        to_date = to_date or today.isoformat()
+        from_date = from_date or (today - timedelta(days=28)).isoformat()
+        selected_contracts = self._select_option_contracts(contracts, max_contracts)
+        samples: list[dict[str, Any]] = []
+        contract_results: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for contract in selected_contracts:
+            instrument_key = contract.get("instrument_key")
+            if not instrument_key:
+                continue
+            contract_candles: list[dict[str, Any]] = []
+            contract_samples: list[dict[str, Any]] = []
+            for chunk_from, chunk_to in self._date_chunks(from_date, to_date, interval):
+                try:
+                    payload = await self.client.historical_candles(instrument_key, "minutes", interval, chunk_to, chunk_from)
+                    chunk_candles = self._parse_candles(payload)
+                    chunk_samples = self._generate_option_runner_samples(symbol, contract, chunk_candles, max(0, target - len(samples)))
+                    contract_candles.extend(chunk_candles)
+                    contract_samples.extend(chunk_samples)
+                    samples.extend(chunk_samples)
+                    if len(samples) >= target:
+                        break
+                except Exception as exc:
+                    errors.append(f"{instrument_key} {chunk_from}->{chunk_to}: {exc}")
+            contract_results.append({
+                "instrumentKey": instrument_key,
+                "tradingSymbol": contract.get("trading_symbol") or contract.get("name"),
+                "strike": contract.get("strike_price"),
+                "optionType": contract.get("option_type"),
+                "candles": len(contract_candles),
+                "samples": len(contract_samples),
+            })
+            if len(samples) >= target:
+                break
+        learning = await self.learner.train_from_historical_samples(samples)
+        return {
+            "available": bool(samples),
+            "trainingMode": "EXACT_OPTION_PREMIUM_CANDLES" if samples else "UNAVAILABLE",
+            "symbol": symbol,
+            "underlyingInstrumentKey": underlying_key,
+            "expiry": expiry,
+            "fromDate": from_date,
+            "toDate": to_date,
+            "targetTrades": target,
+            "generatedTrades": len(samples),
+            "enoughSamples": len(samples) >= target,
+            "contractsChecked": contract_results,
+            "errors": errors[-20:],
+            "learning": learning,
+            "note": "Uses actual Upstox historical candles for option instrument keys. If no samples are produced, Upstox option premium history is unavailable for the selected contracts/date range.",
+        }
+
+    def _select_option_contracts(self, contracts: list[dict[str, Any]], max_contracts: int) -> list[dict[str, Any]]:
+        def sort_key(item: dict[str, Any]) -> tuple[int, float]:
+            option_type = str(item.get("option_type") or item.get("optionType") or "")
+            strike = float(item.get("strike_price") or item.get("strike") or 0)
+            # Prefer index options with available strike; keep CE/PE balanced by sorting around middle later.
+            return (0 if option_type in {"CE", "PE", "CALL", "PUT"} else 1, strike)
+        ordered = sorted(contracts, key=sort_key)
+        if len(ordered) <= max_contracts:
+            return ordered
+        mid = len(ordered) // 2
+        half = max_contracts // 2
+        return ordered[max(0, mid - half): min(len(ordered), mid + half)]
+
+    def _generate_option_runner_samples(self, symbol: str, contract: dict[str, Any], candles: list[dict[str, Any]], target: int) -> list[dict[str, Any]]:
+        samples: list[dict[str, Any]] = []
+        if len(candles) < 20:
+            return samples
+        instrument_key = contract.get("instrument_key")
+        side = "CALL" if str(contract.get("option_type") or "").upper() in {"CE", "CALL"} else "PUT"
+        for index in range(12, len(candles) - 8):
+            window = candles[index - 10:index]
+            current = candles[index]
+            future = candles[index + 1:index + 8]
+            avg_volume = sum(candle["volume"] for candle in window) / len(window) if window else 0
+            high = max(candle["high"] for candle in window)
+            low = min(candle["low"] for candle in window)
+            atr = sum(abs(candle["high"] - candle["low"]) for candle in window) / len(window)
+            if current["close"] <= high or (avg_volume and current["volume"] < avg_volume * 1.2):
+                continue
+            entry = current["close"]
+            if entry <= 0:
+                continue
+            mfe = max(candle["high"] - entry for candle in future)
+            mae = min(candle["low"] - entry for candle in future)
+            target_30 = entry * 0.30
+            target_50 = entry * 0.50
+            target_100 = entry
+            best_pct = (mfe / entry) * 100
+            stop = max(entry * 0.12, atr * 0.6, 0.5)
+            if mfe >= target_100:
+                pnl = target_50 + (mfe - target_50) * 0.55
+                outcome = "+100pct_runner"
+            elif mfe >= target_50:
+                pnl = target_30 + (mfe - target_30) * 0.45
+                outcome = "+50pct_runner"
+            elif mfe >= target_30:
+                pnl = target_30 * 0.7
+                outcome = "+30pct_runner"
+            else:
+                pnl = max(mae, -stop)
+                outcome = "runner_failed"
+            pnl -= max(0.1, entry * 0.003)
+            tqs = max(35, min(99, 62 + min(best_pct, 120) * 0.18 + (10 if current["volume"] >= (avg_volume or 0) * 1.5 else 0)))
+            samples.append({
+                "symbol": symbol,
+                "instrumentKey": instrument_key,
+                "time": current["time"],
+                "side": side,
+                "entry": round(entry, 2),
+                "pnl": round(pnl, 2),
+                "tqs": round(tqs),
+                "volume": current["volume"],
+                "atr": round(atr, 2),
+                "bestMovePct": round(best_pct, 2),
+                "regime": "TREND_EXPANSION" if pnl > 0 else "REVERSAL_RISK",
+                "strategyType": "EXPLOSIVE_RUNNER_EXACT_OPTION_PREMIUM",
+                "outcome": outcome,
+            })
+            if len(samples) >= target:
+                break
+        return samples
+
     def _date_chunks(self, from_date: str, to_date: str, interval: int) -> list[tuple[str, str]]:
         start = date.fromisoformat(from_date)
         end = date.fromisoformat(to_date)
