@@ -6,6 +6,9 @@ This folder exists only to protect deployments where Vercel Root Directory is al
 cd frontend && npm install && npm run build
 ```
 
+The nested `frontend/frontend` wrapper protects the same stale command when
+Vercel Root Directory has accidentally been set to this compatibility folder.
+
 The correct Vercel configuration is either:
 
 - Root Directory `./`, Build Command `npm --prefix frontend install && npm --prefix frontend run build`, Output `frontend/dist`
