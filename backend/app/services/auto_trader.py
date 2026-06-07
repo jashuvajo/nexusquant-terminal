@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -47,6 +48,7 @@ class PaperTrade:
     entry_tqs: int
     spread_cost: float
     slippage_estimate: float
+    charges_estimate: float
     opened_at: str
     mode: str
     strategy_type: str = "SCALP"
@@ -55,6 +57,9 @@ class PaperTrade:
     exit_reason: str | None = None
     exited_at: str | None = None
     pnl: float = 0.0
+    best_price: float = 0.0
+    breakeven_armed: bool = False
+    partial_exit_taken: bool = False
     lifecycle: list[LifecycleEvent] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +75,7 @@ class PaperTrade:
             "entryTqs": self.entry_tqs,
             "spreadCost": self.spread_cost,
             "slippageEstimate": self.slippage_estimate,
+            "chargesEstimate": self.charges_estimate,
             "openedAt": self.opened_at,
             "mode": self.mode,
             "strategyType": self.strategy_type,
@@ -78,6 +84,9 @@ class PaperTrade:
             "exitReason": self.exit_reason,
             "exitedAt": self.exited_at,
             "pnl": round(self.pnl, 2),
+            "bestPrice": self.best_price,
+            "breakevenArmed": self.breakeven_armed,
+            "partialExitTaken": self.partial_exit_taken,
             "lifecycle": [event.__dict__ for event in self.lifecycle],
         }
 
@@ -97,6 +106,7 @@ class AutoTraderEngine:
     _shared_learning_samples = 0
     _shared_learning_score = 50.0
     _shared_last_learning_update: str | None = None
+    _shared_recent_signal_times: dict[str, float] = {}
 
     def __init__(self, settings: Settings, trading_control: TradingControl, learner: ContinuousAILearner | None = None) -> None:
         self.settings = settings
@@ -114,6 +124,7 @@ class AutoTraderEngine:
         capital = await self.trading_control.capital_status()
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
+        cached_snapshot = self._all_snapshots_cached(snapshots)
 
         signal_events = []
         skipped = []
@@ -121,6 +132,13 @@ class AutoTraderEngine:
             event = self._signal_event(candidate, payload)
             signal_events.append(event)
             self.lifecycle_events.append(event)
+            signal_id = str(candidate.get("id") or "")
+            if cached_snapshot:
+                skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
+                continue
+            if self._recent_signal_active(signal_id):
+                skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
+                continue
             quality = self._pre_trade_quality(candidate)
             if quality["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
@@ -182,6 +200,7 @@ class AutoTraderEngine:
         self.open_paper.clear()
         self.closed_paper.clear()
         self.lifecycle_events.clear()
+        AutoTraderEngine._shared_recent_signal_times.clear()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
@@ -269,9 +288,12 @@ class AutoTraderEngine:
 
     def _pre_trade_quality(self, candidate: dict[str, Any]) -> dict[str, Any]:
         premium = float(candidate.get("lastPremium") or 0)
+        quantity = int(candidate.get("quantityEstimate") or candidate.get("lotSize") or 1)
         spread_cost = max(0.0, premium * 0.004)
         slippage = max(0.05, premium * 0.002)
-        required_move = spread_cost + slippage + self.settings.min_required_move_points
+        charges = self._charges_estimate(premium, premium, quantity)
+        charges_per_unit = charges / quantity if quantity > 0 else 0.0
+        required_move = spread_cost + slippage + charges_per_unit + self.settings.min_required_move_points
         reasons = []
         if premium <= 0:
             reasons.append("missing premium")
@@ -288,6 +310,8 @@ class AutoTraderEngine:
             "reason": ", ".join(reasons) if reasons else "quality accepted",
             "spreadCost": round(spread_cost, 2),
             "slippageEstimate": round(slippage, 2),
+            "chargesEstimate": round(charges, 2),
+            "chargesPerUnit": round(charges_per_unit, 4),
             "minimumRequiredMove": round(required_move, 2),
         }
 
@@ -295,7 +319,10 @@ class AutoTraderEngine:
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
+        if self._recent_signal_active(trade_id):
+            return None
         quantity = int(candidate.get("quantityEstimate") or 1)
+        charges = self._charges_estimate(float(candidate.get("lastPremium") or 0), float(candidate.get("lastPremium") or 0), max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
             symbol=str(candidate.get("symbol")),
@@ -308,9 +335,11 @@ class AutoTraderEngine:
             entry_tqs=int(candidate.get("tqs") or 0),
             spread_cost=float(quality["spreadCost"]),
             slippage_estimate=float(quality["slippageEstimate"]),
+            charges_estimate=float(quality.get("chargesEstimate") or charges),
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
             strategy_type=str(candidate.get("strategyType") or "SCALP"),
+            best_price=float(candidate.get("lastPremium") or 0),
         )
         trade.lifecycle.extend([
             LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], quality),
@@ -328,18 +357,29 @@ class AutoTraderEngine:
         for trade_id, trade in list(self.open_paper.items()):
             candidate = candidates_by_id.get(trade_id)
             current = float((candidate or {}).get("lastPremium") or trade.entry_price)
+            trade.best_price = max(trade.best_price or trade.entry_price, current)
             age = self._age_seconds(trade.opened_at)
             reason = None
             profile = (candidate or {}).get("optimizedProfile") or {}
             target_points = float(profile.get("targetPoints") or self.settings.paper_target_points)
             stop_points = float(profile.get("stopPoints") or self.settings.paper_stop_points)
+            partial_exit_at = max(1.0, target_points * float(profile.get("partialExitPct") or 0.6))
+            breakeven_shift = float(self.settings.paper_breakeven_shift_points)
             style = str(profile.get("executionStyle") or "GENERIC")
             if style == "RUNNER_BREAKOUT":
                 target_points = max(target_points, self.settings.paper_target_points * 1.2)
             elif style == "HIGH_WIN_SCALP":
-                target_points = min(target_points, self.settings.paper_target_points)
+                target_points = max(target_points, self.settings.paper_target_points)
+            if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
+                trade.breakeven_armed = True
+                trade.lifecycle.append(LifecycleEvent("MODIFIED", datetime.now(timezone.utc).isoformat(), "breakeven stop armed", {"breakevenAt": trade.entry_price, "bestPrice": trade.best_price}))
+            if not trade.partial_exit_taken and trade.best_price >= trade.entry_price + partial_exit_at:
+                trade.partial_exit_taken = True
+                trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             if current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
+            elif trade.breakeven_armed and current <= trade.entry_price:
+                reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
                 reason = "momentum decay or delta reversal stop"
             elif age >= self.settings.max_paper_trade_seconds:
@@ -351,9 +391,12 @@ class AutoTraderEngine:
                 trade.exit_price = current
                 trade.exit_reason = reason
                 trade.exited_at = datetime.now(timezone.utc).isoformat()
-                trade.pnl = (current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity
-                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl}))
+                charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
+                trade.charges_estimate = charges
+                trade.pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges}))
                 self.closed_paper.append(trade)
+                AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
                 del self.open_paper[trade_id]
                 exits.append(trade.to_dict())
@@ -369,11 +412,13 @@ class AutoTraderEngine:
         AutoTraderEngine._shared_last_learning_update = datetime.now(timezone.utc).isoformat()
 
     def _slippage_summary(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
-        estimates = [self._pre_trade_quality(candidate)["slippageEstimate"] for candidate in candidates]
+        qualities = [self._pre_trade_quality(candidate) for candidate in candidates]
+        estimates = [quality["slippageEstimate"] for quality in qualities]
         return {
             "averageExpectedSlippage": round(sum(estimates) / len(estimates), 2) if estimates else 0,
+            "averageEstimatedCharges": round(sum(float(quality.get("chargesEstimate") or 0) for quality in qualities) / len(qualities), 2) if qualities else 0,
             "minimumRequiredMovePoints": self.settings.min_required_move_points,
-            "model": "premium_based_spread_slippage_guard",
+            "model": "premium_spread_slippage_plus_india_options_charges",
         }
 
     def _position_sizing_summary(self, candidates: list[dict[str, Any]], capital: float) -> dict[str, Any]:
@@ -383,6 +428,8 @@ class AutoTraderEngine:
                 {
                     "id": candidate.get("id"),
                     "quantityEstimate": candidate.get("quantityEstimate", 0),
+                    "lotSize": candidate.get("lotSize"),
+                    "estimatedLots": candidate.get("estimatedLots"),
                     "allocationPct": candidate.get("allocationPct", 0),
                     "tqs": candidate.get("tqs"),
                 }
@@ -400,11 +447,44 @@ class AutoTraderEngine:
             "executionCandidates": payload.get("executionCandidates", [])[:10],
         }
 
+    def _all_snapshots_cached(self, snapshots: dict[str, Any]) -> bool:
+        if not snapshots:
+            return False
+        statuses = [(snapshot.get("cacheStatus") or {}).get("source") for snapshot in snapshots.values() if isinstance(snapshot, dict)]
+        return bool(statuses) and all(status == "engine_snapshot_cache" for status in statuses)
+
+    def _recent_signal_active(self, signal_id: str) -> bool:
+        if not signal_id:
+            return False
+        last_seen = AutoTraderEngine._shared_recent_signal_times.get(signal_id)
+        if last_seen is None:
+            return False
+        age = monotonic() - last_seen
+        if age > max(0, self.settings.paper_duplicate_signal_cooldown_seconds):
+            AutoTraderEngine._shared_recent_signal_times.pop(signal_id, None)
+            return False
+        return True
+
     def _age_seconds(self, iso_timestamp: str) -> float:
         try:
             return (datetime.now(timezone.utc) - datetime.fromisoformat(iso_timestamp)).total_seconds()
         except ValueError:
             return 0.0
+
+    def _charges_estimate(self, entry_price: float, exit_price: float, quantity: int) -> float:
+        quantity = max(0, int(quantity))
+        if quantity <= 0:
+            return 0.0
+        buy_turnover = max(0.0, entry_price) * quantity
+        sell_turnover = max(0.0, exit_price) * quantity
+        total_turnover = buy_turnover + sell_turnover
+        brokerage = min(float(self.settings.option_brokerage_per_order), buy_turnover) + min(float(self.settings.option_brokerage_per_order), sell_turnover)
+        stt = sell_turnover * float(self.settings.option_stt_sell_pct) / 100
+        exchange_txn = total_turnover * float(self.settings.option_exchange_txn_pct) / 100
+        sebi = total_turnover * float(self.settings.option_sebi_pct) / 100
+        stamp = buy_turnover * float(self.settings.option_stamp_buy_pct) / 100
+        gst = (brokerage + exchange_txn + sebi) * float(self.settings.option_gst_pct) / 100
+        return round(brokerage + stt + exchange_txn + sebi + stamp + gst, 2)
 
     def _max_drawdown(self, pnls: list[float]) -> float:
         equity = 0.0

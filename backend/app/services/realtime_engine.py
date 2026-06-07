@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 import ast
 from inspect import signature
 from datetime import date, datetime, timedelta, timezone
-from time import perf_counter
+from time import monotonic, perf_counter
 from statistics import mean
 from typing import Any
 
@@ -109,12 +110,25 @@ class RealTimeMarketEngine:
         self.trading_control = trading_control or TradingControl(settings.redis_url)
         self.previous: dict[str, PreviousTick] = {}
         self.previous_options: dict[str, PreviousTick] = {}
+        self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._expiry_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._contract_meta: dict[str, dict[str, Any]] = {}
+        self._account_cache: tuple[float, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] | None = None
 
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
         if selected_symbol not in {"NIFTY", "SENSEX"}:
             raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
+        cached = self._snapshot_cache.get(selected_symbol)
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.snapshot_cache_seconds)):
+                payload = deepcopy(cached[1])
+                payload["cacheStatus"] = {"source": "engine_snapshot_cache", "ageSeconds": round(age_seconds, 2), "ttlSeconds": self.settings.snapshot_cache_seconds}
+                payload.setdefault("infra", {})["cacheAgeSeconds"] = round(age_seconds, 2)
+                payload["infra"]["websocketLatencyMs"] = round((perf_counter() - processing_started) * 1000, 2)
+                return payload
 
         instrument_key = self.settings.instrument_key_for(selected_symbol)
         optimized_profile = self.settings.optimized_profile_for(selected_symbol)
@@ -126,16 +140,15 @@ class RealTimeMarketEngine:
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
         quote_task = self.client.ltp([instrument_key])
-        funds_task = self._optional(self.client.funds(), "funds", data_warnings)
-        positions_task = self._optional(self.client.positions(), "positions", data_warnings)
-        orders_task = self._optional(self.client.orders(), "orders", data_warnings)
+        account_task = self._account_snapshot(data_warnings)
         external_news_task = self._optional(NewsProvider(self.settings).fetch(selected_symbol), "external_news", data_warnings)
         use_upstox_news = self.settings.upstox_news_enabled or self.settings.news_provider.lower().strip() == "upstox"
         upstox_news_task = self._optional(self.client.news_headlines(instrument_key), "upstox_news", data_warnings) if use_upstox_news else asyncio.sleep(0, result=None)
 
-        option_chain, candles, ltp_quote, funds, positions, orders, external_news, upstox_news = await asyncio.gather(
-            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, external_news_task, upstox_news_task
+        option_chain, candles, ltp_quote, account_payload, external_news, upstox_news = await asyncio.gather(
+            option_chain_task, candle_task, quote_task, account_task, external_news_task, upstox_news_task
         )
+        funds, positions, orders = account_payload
         news_payload = external_news if (external_news or {}).get("data") else upstox_news
         news_reason = None
         if not (external_news or {}).get("data") and not upstox_news:
@@ -246,6 +259,11 @@ class RealTimeMarketEngine:
             tqs=tqs,
         )
         runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
+        plan_signal = self._best_in_range_runner_signal(runner_watchlist)
+        plan_strike = as_int(plan_signal.get("strike")) if plan_signal else atm_strike
+        plan_side = str(plan_signal.get("side") or selected_side) if plan_signal else selected_side
+        plan_instrument = plan_signal.get("instrumentKey") if plan_signal else selected_instrument
+        plan_ltp = as_float(plan_signal.get("premium") or plan_signal.get("lastPremium")) if plan_signal else selected_ltp
         current = PreviousTick(spot=spot, selected_ltp=selected_ltp, selected_volume=as_int(selected_md.get("volume")), timestamp=datetime.now(timezone.utc))
         self.previous[selected_symbol] = current
 
@@ -322,7 +340,7 @@ class RealTimeMarketEngine:
             )
         )
 
-        return {
+        payload = {
             "type": "snapshot",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "marketPhase": session.phase.value,
@@ -360,12 +378,12 @@ class RealTimeMarketEngine:
             },
             "expiryState": expiry_state,
             "premarketAnalysis": self._premarket_analysis(session.phase, market_profile, option_bias, spread_quality, tqs),
-            "tomorrowTradePlan": self._tomorrow_trade_plan(selected_symbol, expiry, atm_strike, selected_side, selected_instrument, selected_ltp, tqs, market_profile, option_bias, risk_decision.safe_mode),
+            "tomorrowTradePlan": self._tomorrow_trade_plan(selected_symbol, expiry, plan_strike, plan_side, plan_instrument, plan_ltp, tqs, market_profile, option_bias, risk_decision.safe_mode, plan_signal),
             "suggestedTrades": suggested_trades,
             "symbol": selected_symbol,
             "spot": round(spot, 2),
             "atmStrike": atm_strike,
-            "premiumFocusZone": f"{atm_strike} {selected_side} {expiry} | {selected_instrument or 'instrument unavailable'}",
+            "premiumFocusZone": f"{plan_strike} {plan_side} {expiry} | {plan_instrument or 'instrument unavailable'} | LTP {round(plan_ltp, 2)} | Range {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f}",
             "aiConfidence": tqs,
             "tradeQualityScore": tqs,
             "pnl": portfolio["unrealizedPnl"],
@@ -424,10 +442,20 @@ class RealTimeMarketEngine:
                 "candidateLtp": selected_ltp,
             },
         }
+        payload["cacheStatus"] = {"source": "fresh", "ageSeconds": 0, "ttlSeconds": self.settings.snapshot_cache_seconds}
+        self._snapshot_cache[selected_symbol] = (monotonic(), deepcopy(payload))
+        return payload
 
 
     async def resolve_expiry(self, symbol: str, instrument_key: str, warnings: list[str] | None = None) -> dict[str, Any]:
         warnings = warnings if warnings is not None else []
+        cached = self._expiry_cache.get(symbol)
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.expiry_cache_seconds)):
+                payload = deepcopy(cached[1])
+                payload["cache"] = {"hit": True, "ageSeconds": round(age_seconds, 2), "ttlSeconds": self.settings.expiry_cache_seconds}
+                return payload
         configured = self.settings.expiry_for(symbol)
         contracts_payload = await self.client.option_contracts(instrument_key)
         contracts = contracts_payload.get("data") or []
@@ -457,7 +485,17 @@ class RealTimeMarketEngine:
                 warnings.append(f"Configured {symbol}_EXPIRY_DATE={configured} not found in Upstox contracts; using nearest available {selected}.")
 
         selected_contracts = [item for item in contracts if item.get("expiry") == selected]
-        return {
+        self._contract_meta.update({
+            str(item.get("instrument_key")): {
+                "lotSize": as_int(item.get("lot_size") or item.get("minimum_lot"), 1),
+                "minimumLot": as_int(item.get("minimum_lot") or item.get("lot_size"), 1),
+                "freezeQuantity": as_int(item.get("freeze_quantity"), 0),
+                "tradingSymbol": item.get("trading_symbol"),
+            }
+            for item in selected_contracts
+            if item.get("instrument_key")
+        })
+        payload = {
             "symbol": symbol,
             "underlyingInstrumentKey": instrument_key,
             "selectedExpiry": selected,
@@ -468,6 +506,29 @@ class RealTimeMarketEngine:
             "selectedContractCount": len(selected_contracts),
             "lastCheckedAt": datetime.now(timezone.utc).isoformat(),
         }
+        payload["cache"] = {"hit": False, "ageSeconds": 0, "ttlSeconds": self.settings.expiry_cache_seconds}
+        self._expiry_cache[symbol] = (monotonic(), deepcopy(payload))
+        return payload
+
+    def _contract_details(self, instrument_key: str | None) -> dict[str, Any]:
+        if not instrument_key:
+            return {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None}
+        return self._contract_meta.get(str(instrument_key)) or {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None}
+
+    def _lot_sized_position(self, instrument_key: str | None, premium: float, risk_capital: float) -> dict[str, Any]:
+        details = self._contract_details(instrument_key)
+        lot_size = max(1, as_int(details.get("lotSize"), 1))
+        if premium <= 0 or risk_capital <= 0:
+            lots = 0
+        else:
+            lots = int(risk_capital // (premium * lot_size))
+        quantity = lots * lot_size
+        return {
+            **details,
+            "lots": lots,
+            "quantity": quantity,
+            "notional": round(quantity * premium, 2),
+        }
 
     async def _optional(self, coroutine: Any, label: str, warnings: list[str]) -> dict[str, Any] | None:
         try:
@@ -475,6 +536,21 @@ class RealTimeMarketEngine:
         except Exception as exc:
             warnings.append(f"Upstox {label} unavailable: {exc}")
             return None
+
+    async def _account_snapshot(self, warnings: list[str]) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        cached = self._account_cache
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.account_snapshot_cache_seconds)):
+                return deepcopy(cached[1])
+        funds, positions, orders = await asyncio.gather(
+            self._optional(self.client.funds(), "funds", warnings),
+            self._optional(self.client.positions(), "positions", warnings),
+            self._optional(self.client.orders(), "orders", warnings),
+        )
+        payload = (funds, positions, orders)
+        self._account_cache = (monotonic(), deepcopy(payload))
+        return payload
 
     def _underlying_spot(self, rows: list[dict[str, Any]], ltp_quote: dict[str, Any]) -> float:
         for row in rows:
@@ -806,7 +882,12 @@ class RealTimeMarketEngine:
         if not self.settings.explosive_runner_enabled:
             return []
         engine = ExplosiveRunnerEngine(option_premium_history_available=self.settings.option_premium_history_available)
-        nearest = sorted(rows, key=lambda row: abs(as_float(row.get("strike_price")) - spot))[: max(1, self.settings.explosive_runner_scan_strikes)]
+        scan_limit = max(1, self.settings.explosive_runner_scan_strikes)
+        premium_min = max(0.0, float(self.settings.explosive_runner_premium_min))
+        premium_max = max(premium_min, float(self.settings.explosive_runner_premium_max))
+        sorted_rows = sorted(rows, key=lambda row: abs(as_float(row.get("strike_price")) - spot))
+        in_range_rows = [row for row in sorted_rows if self._row_has_premium_in_range(row, premium_min, premium_max)]
+        nearest = (in_range_rows or sorted_rows)[:scan_limit]
         watchlist: list[dict[str, Any]] = []
         for row in nearest:
             strike = as_int(row.get("strike_price"))
@@ -817,6 +898,9 @@ class RealTimeMarketEngine:
                 if premium <= 0:
                     continue
                 instrument_key = option.get("instrument_key")
+                if not self._premium_in_runner_range(premium):
+                    watchlist.append(self._explosive_runner_range_rejected(symbol, expiry, strike, side, instrument_key, premium))
+                    continue
                 volume_state = self._single_option_volume_state(md)
                 orderflow = self._single_option_orderflow(symbol, spot, side, instrument_key, md, volume_state)
                 greeks = self._single_option_greeks(option.get("option_greeks") or {})
@@ -839,12 +923,64 @@ class RealTimeMarketEngine:
                 )
                 signal["id"] = f"{symbol}-{expiry}-{strike}-{side}-RUNNER"
                 signal["lastPremium"] = premium
+                signal["premiumRange"] = {"min": premium_min, "max": premium_max, "withinRange": True}
+                signal["contract"] = self._contract_details(instrument_key)
                 signal["orderflow"] = orderflow
                 signal["volumeState"] = volume_state
                 signal["monitoringCadenceSeconds"] = self.settings.market_poll_seconds
                 signal["watchMode"] = "ALWAYS_ON_OPEN_EXPLOSIVE_SCAN"
                 watchlist.append(signal)
         return sorted(watchlist, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score"))), reverse=True)
+
+    def _best_in_range_runner_signal(self, runner_watchlist: list[dict[str, Any]]) -> dict[str, Any] | None:
+        in_range = [
+            signal for signal in runner_watchlist
+            if (signal.get("premiumRange") or {}).get("withinRange") and as_float(signal.get("premium") or signal.get("lastPremium")) > 0
+        ]
+        if not in_range:
+            return None
+        return sorted(in_range, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score")), as_float(item.get("volumeState", {}).get("effectiveVolume"))), reverse=True)[0]
+
+    def _row_has_premium_in_range(self, row: dict[str, Any], premium_min: float, premium_max: float) -> bool:
+        for option_key in ["call_options", "put_options"]:
+            md = ((row.get(option_key) or {}).get("market_data") or {})
+            premium = as_float(md.get("ltp"))
+            if premium_min <= premium <= premium_max:
+                return True
+        return False
+
+    def _premium_in_runner_range(self, premium: float) -> bool:
+        return self.settings.explosive_runner_premium_min <= premium <= self.settings.explosive_runner_premium_max
+
+    def _explosive_runner_range_rejected(self, symbol: str, expiry: str, strike: int, side: str, instrument_key: str | None, premium: float) -> dict[str, Any]:
+        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        reason = f"premium {premium:.2f} outside configured runner range {premium_min:.2f}-{premium_max:.2f}"
+        return {
+            "id": f"{symbol}-{expiry}-{strike}-{side}-RUNNER-RANGE-REJECTED",
+            "strategyType": "EXPLOSIVE_RUNNER",
+            "candidate": False,
+            "confidence": "FILTERED",
+            "score": 0,
+            "symbol": symbol,
+            "side": side,
+            "strike": strike,
+            "expiry": expiry,
+            "instrumentKey": instrument_key,
+            "premium": premium,
+            "lastPremium": premium,
+            "premiumRange": {"min": premium_min, "max": premium_max, "withinRange": False},
+            "targetPremiumPct": 0,
+            "hardStopPct": 0,
+            "trailPct": 0,
+            "partialExitPct": 0,
+            "runnerPct": 0,
+            "reasons": [reason],
+            "dataStatus": {"trainingMode": "premium_filtered_for_100000_capital_backtest"},
+            "metrics": {},
+            "watchMode": "FILTERED_BY_PREMIUM_RANGE",
+            "monitoringCadenceSeconds": self.settings.market_poll_seconds,
+        }
 
     def _explosive_runner_disabled(self, symbol: str, expiry: str) -> dict[str, Any]:
         return {
@@ -883,7 +1019,9 @@ class RealTimeMarketEngine:
             if not signal.get("candidate") or as_float(signal.get("score")) < self.settings.explosive_runner_min_score:
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
-            quantity_estimate = int(trading_capital // premium) if premium > 0 and trading_capital > 0 else 0
+            risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
+            position = self._lot_sized_position(str(signal.get("instrumentKey") or ""), premium, risk_capital)
+            quantity_estimate = int(position["quantity"])
             allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
             volume_state = signal.get("volumeState") or {}
             trades.append(
@@ -898,6 +1036,11 @@ class RealTimeMarketEngine:
                     "instrumentKey": signal.get("instrumentKey"),
                     "lastPremium": premium,
                     "tradingCapital": trading_capital,
+                    "riskCapital": round(risk_capital, 2),
+                    "maxExposurePct": self.settings.max_exposure_pct,
+                    "lotSize": position["lotSize"],
+                    "estimatedLots": position["lots"],
+                    "tradingSymbol": position.get("tradingSymbol"),
                     "quantityEstimate": quantity_estimate,
                     "allocationPct": allocation_pct,
                     "chopBlocked": False,
@@ -915,6 +1058,7 @@ class RealTimeMarketEngine:
                     "safeMode": safe_mode,
                     "entryRules": [
                         "Paper-only explosive runner candidate while ENABLE_LIVE_TRADING=false",
+                        f"Premium must stay inside {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f} for 100000 capital backtest sizing",
                         "Monitor every configured second from backend background loop and UI polling",
                         "Require premium expansion, spread quality, volume/OI and delta velocity to remain supportive",
                     ],
@@ -1234,6 +1378,7 @@ class RealTimeMarketEngine:
             "executionStyle": style,
             "targetPoints": round(target, 2),
             "stopPoints": round(stop, 2),
+            "breakevenShiftPoints": round(float(self.settings.paper_breakeven_shift_points), 2),
             "trailPoints": round(trail, 2),
             "partialExitAt": round(target * partial_pct, 2),
             "partialExitPct": partial_pct,
@@ -1377,7 +1522,9 @@ class RealTimeMarketEngine:
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
-        quantity_estimate = int(trading_capital // premium) if premium > 0 and trading_capital > 0 else 0
+        risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
+        position = self._lot_sized_position(instrument, premium, risk_capital)
+        quantity_estimate = int(position["quantity"])
         allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
         return [
             {
@@ -1391,6 +1538,11 @@ class RealTimeMarketEngine:
                 "instrumentKey": instrument,
                 "lastPremium": premium,
                 "tradingCapital": trading_capital,
+                "riskCapital": round(risk_capital, 2),
+                "maxExposurePct": self.settings.max_exposure_pct,
+                "lotSize": position["lotSize"],
+                "estimatedLots": position["lots"],
+                "tradingSymbol": position.get("tradingSymbol"),
                 "quantityEstimate": quantity_estimate,
                 "allocationPct": allocation_pct,
                 "chopBlocked": chop_filter.get("blocked", False),
@@ -1440,10 +1592,12 @@ class RealTimeMarketEngine:
                 "val": profile.get("val"),
             },
             "checklist": [
+                "Pre-market analysis phase runs on trading days from 08:30 to 09:15 IST; weekends/after-hours show closed-market review",
                 "Confirm first 5-minute candle direction after 09:15 IST",
                 "Trade only if spread quality stays above threshold",
                 "Confirm option-chain OI bias and ATM liquidity before entry",
-                "Keep explosive runner watchlist active every second from pre-open into 09:15 open",
+                f"Only consider option premium LTP inside {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f}",
+                "Keep explosive runner watchlist active from pre-open into the 09:15 open",
                 "Open only paper trades while ENABLE_LIVE_TRADING=false",
                 "Avoid live orders until ENABLE_LIVE_TRADING is intentionally enabled",
             ],
@@ -1474,12 +1628,18 @@ class RealTimeMarketEngine:
         profile: dict[str, Any],
         bias: dict[str, Any],
         safe_mode: bool,
+        source_signal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        within_range = premium_min <= ltp <= premium_max
         return {
             "generatedFor": "next_trading_session",
             "symbol": symbol,
             "expiry": expiry,
             "primaryBias": bias.get("direction"),
+            "source": "in_range_runner_watchlist" if source_signal else "atm_bias_fallback",
+            "premiumRange": {"min": premium_min, "max": premium_max, "withinRange": within_range},
             "candidate": {
                 "side": side,
                 "strike": atm_strike,
@@ -1487,6 +1647,7 @@ class RealTimeMarketEngine:
                 "lastPremium": ltp,
             },
             "entryRules": [
+                f"Candidate must remain inside LTP range {premium_min:.0f}-{premium_max:.0f}; current LTP {ltp:.2f}",
                 f"Prefer {side} scalp only if spot accepts above VAH" if side == "CALL" else f"Prefer {side} scalp only if spot rejects below VAL",
                 "Require TQS above configured threshold after live market opens",
                 "Require tight bid/ask spread and fresh volume expansion",

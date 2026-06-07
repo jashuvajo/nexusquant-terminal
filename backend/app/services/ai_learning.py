@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 try:
@@ -79,9 +81,10 @@ class ContinuousAILearner:
 
     _state: dict[str, Any] = _initial_state()
 
-    def __init__(self, redis_url: str, enabled: bool = True) -> None:
+    def __init__(self, redis_url: str, enabled: bool = True, state_file: str | None = None) -> None:
         self.redis_url = redis_url
         self.enabled = enabled
+        self.state_file = state_file
 
     async def load(self) -> dict[str, Any]:
         if redis is not None:
@@ -93,9 +96,13 @@ class ContinuousAILearner:
                     ContinuousAILearner._state = json.loads(raw)
             except Exception:
                 pass
+        file_state = self._load_file_state()
+        if file_state:
+            ContinuousAILearner._state = file_state
         return ContinuousAILearner._state
 
     async def persist(self) -> None:
+        self._persist_file_state(ContinuousAILearner._state)
         if redis is None:
             return
         try:
@@ -104,6 +111,32 @@ class ContinuousAILearner:
             await client.aclose()
         except Exception:
             pass
+
+    def _load_file_state(self) -> dict[str, Any] | None:
+        if not self.state_file:
+            return None
+        try:
+            path = Path(self.state_file)
+            if not path.exists():
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    def _persist_file_state(self, state: dict[str, Any]) -> None:
+        if not self.state_file:
+            return
+        try:
+            path = Path(self.state_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+            tmp_path.write_text(json.dumps(state), encoding="utf-8")
+            os.chmod(tmp_path, 0o600)
+            tmp_path.replace(path)
+            os.chmod(path, 0o600)
+        except Exception:
+            return
 
     async def update_from_tick(self, payload: dict[str, Any], exits: list[dict[str, Any]], mode: str = "paper") -> dict[str, Any]:
         state = await self.load()

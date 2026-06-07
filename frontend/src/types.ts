@@ -194,6 +194,8 @@ export interface TomorrowTradePlan {
   symbol: MarketSymbol;
   expiry: string;
   primaryBias: string;
+  source?: string;
+  premiumRange?: { min: number; max: number; withinRange: boolean };
   candidate: { side: 'CALL' | 'PUT'; strike: number; instrumentKey?: string; lastPremium: number };
   entryRules: string[];
   invalidations: string[];
@@ -268,6 +270,11 @@ export interface SuggestedTrade {
   instrumentKey?: string;
   lastPremium: number;
   tradingCapital?: number;
+  riskCapital?: number;
+  maxExposurePct?: number;
+  lotSize?: number;
+  estimatedLots?: number;
+  tradingSymbol?: string;
   quantityEstimate?: number;
   allocationPct?: number;
   chopBlocked?: boolean;
@@ -313,6 +320,7 @@ export interface AdaptiveExitState {
   executionStyle?: string;
   targetPoints: number;
   stopPoints: number;
+  breakevenShiftPoints?: number;
   trailPoints: number;
   partialExitAt: number;
   partialExitPct?: number;
@@ -364,6 +372,7 @@ export interface PaperTrade {
   entryTqs: number;
   spreadCost: number;
   slippageEstimate: number;
+  chargesEstimate?: number;
   openedAt: string;
   mode: string;
   status: string;
@@ -371,6 +380,9 @@ export interface PaperTrade {
   exitReason?: string | null;
   exitedAt?: string | null;
   pnl: number;
+  bestPrice?: number;
+  breakevenArmed?: boolean;
+  partialExitTaken?: boolean;
   lifecycle: PaperLifecycleEvent[];
 }
 

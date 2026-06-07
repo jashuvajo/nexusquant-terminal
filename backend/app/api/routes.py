@@ -31,6 +31,8 @@ from app.services.upstox_client import UpstoxAuthRequired, UpstoxClient, UpstoxD
 
 router = APIRouter(prefix="/api", tags=["terminal"])
 alias_router = APIRouter(tags=["upstox-aliases"])
+_auto_trader_instance: AutoTraderEngine | None = None
+_market_engine_instance: RealTimeMarketEngine | None = None
 
 
 class ScalpOrderRequest(BaseModel):
@@ -91,7 +93,7 @@ def get_event_journal(settings: Settings = Depends(get_settings)) -> EventJourna
 
 
 def get_ai_learner(settings: Settings = Depends(get_settings)) -> ContinuousAILearner:
-    return ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled)
+    return ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled, settings.ai_state_file)
 
 
 def get_auto_trader(
@@ -99,7 +101,10 @@ def get_auto_trader(
     control: TradingControl = Depends(get_trading_control),
     learner: ContinuousAILearner = Depends(get_ai_learner),
 ) -> AutoTraderEngine:
-    return AutoTraderEngine(settings, control, learner)
+    global _auto_trader_instance
+    if _auto_trader_instance is None:
+        _auto_trader_instance = AutoTraderEngine(settings, control, learner)
+    return _auto_trader_instance
 
 
 def get_historical_trainer(
@@ -123,9 +128,12 @@ def get_market_engine(
     client: UpstoxClient = Depends(get_upstox),
     trading_control: TradingControl = Depends(get_trading_control),
 ) -> RealTimeMarketEngine:
-    scorer = TradeQualityScorer()
-    risk_engine = RiskEngine(settings.ai_score_threshold, settings.safe_mode_threshold, settings.max_exposure_pct)
-    return RealTimeMarketEngine(settings, client, scorer, risk_engine, trading_control)
+    global _market_engine_instance
+    if _market_engine_instance is None:
+        scorer = TradeQualityScorer()
+        risk_engine = RiskEngine(settings.ai_score_threshold, settings.safe_mode_threshold, settings.max_exposure_pct)
+        _market_engine_instance = RealTimeMarketEngine(settings, client, scorer, risk_engine, trading_control)
+    return _market_engine_instance
 
 
 @router.get("/terminal/state")
@@ -372,6 +380,10 @@ async def set_capital(request: TradingCapitalRequest, control: TradingControl = 
 async def execution_status(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
     status = await control.status()
     capital = await control.capital_status()
+    if capital["tradingCapital"] <= 0 and settings.trading_capital_default > 0:
+        capital = {**capital, "tradingCapital": settings.trading_capital_default, "source": "TRADING_CAPITAL_DEFAULT"}
+    else:
+        capital = {**capital, "source": "runtime"}
     return {
         **status,
         "capital": capital,
@@ -538,21 +550,26 @@ async def analytics_ltp_ranges(
         try:
             expiry_state = await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
             chain = await client.option_chain(settings.instrument_key_for(symbol), expiry_state["selectedExpiry"])
-            current_ranges = analyzer.analyze_option_chain(chain)
+            current_ranges = analyzer.analyze_option_chain(
+                chain,
+                capital=settings.trading_capital_default,
+                max_exposure_pct=settings.max_exposure_pct,
+                premium_min=settings.explosive_runner_premium_min,
+                premium_max=settings.explosive_runner_premium_max,
+            )
             training = None
             if train:
                 training = await trainer.train(symbol, target_trades)
             results[symbol] = {"expiryState": expiry_state, "currentPremiumRanges": current_ranges, "historicalTraining": training}
         except Exception as exc:
             errors[symbol] = str(exc)
-    if not results:
-        raise HTTPException(status_code=503, detail=errors)
     return {
+        "available": bool(results),
         "targetTrades": target_trades,
         "trained": train,
         "results": results,
         "errors": errors,
-        "note": "Best premium LTP range uses current option-chain LTP. Historical training uses real Upstox index candles unless exact option premium history is available.",
+        "note": "Best premium LTP range uses current option-chain LTP. Historical training uses real Upstox index candles unless exact option premium history is available. If Upstox rate-limits this request, errors are returned without failing the whole website.",
     }
 
 
@@ -743,9 +760,10 @@ async def auto_trader_status(engine: AutoTraderEngine = Depends(get_auto_trader)
 
 
 @router.get("/auto-trader/profit-lock")
-async def auto_trader_profit_lock(engine: AutoTraderEngine = Depends(get_auto_trader), control: TradingControl = Depends(get_trading_control)) -> dict:
+async def auto_trader_profit_lock(engine: AutoTraderEngine = Depends(get_auto_trader), control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
     capital = await control.capital_status()
-    return engine.profit_lock_status(capital.get("tradingCapital", 0))
+    amount = capital.get("tradingCapital", 0) or settings.trading_capital_default
+    return engine.profit_lock_status(amount)
 
 
 @router.get("/auto-trader/replay")

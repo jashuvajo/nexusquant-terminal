@@ -128,7 +128,10 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-bold text-white">{trade.symbol} {trade.strike} {trade.side} | {trade.expiry}</p>
-                  <p className="text-xs text-slate-400">{trade.instrumentKey ?? 'Instrument unavailable'} | Last premium {trade.lastPremium}</p>
+                  <p className="text-xs text-slate-400">
+                    {trade.instrumentKey ?? 'Instrument unavailable'} | Last premium {trade.lastPremium}
+                    {trade.lotSize ? ` | Lot ${trade.lotSize} x ${trade.estimatedLots ?? 0}` : ''}
+                  </p>
                 </div>
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ${trade.action === 'EXECUTION_READY' ? 'bg-emerald-300/10 text-emerald-200' : 'bg-amber-300/10 text-amber-200'}`}>{trade.action.replaceAll('_', ' ')}</span>
               </div>
@@ -238,6 +241,7 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           <div className="mt-3 grid gap-2 sm:grid-cols-4">
             <span>Target <b>{snapshot.adaptiveExit.targetPoints}</b></span>
             <span>Stop <b>{snapshot.adaptiveExit.stopPoints}</b></span>
+            <span>BE <b>{snapshot.adaptiveExit.breakevenShiftPoints ?? 0}</b></span>
             <span>Trail <b>{snapshot.adaptiveExit.trailPoints}</b></span>
             <span>Partial <b>{snapshot.adaptiveExit.partialExitAt}</b></span>
             <span>ATR <b>{snapshot.adaptiveExit.atrPoints ?? 0}</b></span>
@@ -440,6 +444,11 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
                 <span className="font-mono text-white">{snapshot.tomorrowTradePlan.expiry}</span> | Last premium{' '}
                 <span className="font-mono text-white">{snapshot.tomorrowTradePlan.candidate.lastPremium}</span>
               </p>
+              {snapshot.tomorrowTradePlan.premiumRange && (
+                <p className={`mt-2 text-xs ${snapshot.tomorrowTradePlan.premiumRange.withinRange ? 'text-emerald-200' : 'text-amber-200'}`}>
+                  LTP range {snapshot.tomorrowTradePlan.premiumRange.min}-{snapshot.tomorrowTradePlan.premiumRange.max}: {snapshot.tomorrowTradePlan.premiumRange.withinRange ? 'inside considerable range' : 'outside range, watch only'} | Source {snapshot.tomorrowTradePlan.source ?? 'plan'}
+                </p>
+              )}
               <p className="mt-2 text-xs text-slate-400">Instrument: {snapshot.tomorrowTradePlan.candidate.instrumentKey ?? 'not available'}</p>
               <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-300">
                 {snapshot.tomorrowTradePlan.entryRules.map((item) => <li key={item}>{item}</li>)}

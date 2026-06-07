@@ -25,48 +25,64 @@ class Settings(BaseSettings):
     safe_mode_threshold: int = 86
     max_exposure_pct: int = 42
     daily_drawdown_pct: float = 3.0
-    trading_capital_default: float = 0.0
+    trading_capital_default: float = 500000.0
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
     option_premium_history_available: bool = True
     explosive_runner_enabled: bool = True
-    explosive_runner_scan_strikes: int = 8
+    explosive_runner_scan_strikes: int = 16
     explosive_runner_min_score: float = 55.0
+    explosive_runner_premium_min: float = 25.0
+    explosive_runner_premium_max: float = 250.0
     background_market_monitor_enabled: bool = True
     news_lookback_items: int = 20
+    news_cache_ttl_seconds: float = 300.0
+    news_timeout_seconds: float = 3.0
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
+    snapshot_cache_seconds: float = 5.0
+    account_snapshot_cache_seconds: float = 30.0
+    expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
     market_snapshot_monitor_enabled: bool = True
-    market_snapshot_poll_seconds: float = 5.0
+    market_snapshot_poll_seconds: float = 60.0
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35
     nifty_opt_volume_multiplier: float = 2.0
-    nifty_opt_target_points: float = 4.0
-    nifty_opt_stop_points: float = 2.5
-    nifty_opt_trail_atr: float = 0.75
+    nifty_opt_target_points: float = 15.0
+    nifty_opt_stop_points: float = 7.0
+    nifty_opt_trail_atr: float = 0.65
     nifty_opt_entry_model: str = "breakout"
     sensex_opt_min_tqs: int = 68
     sensex_opt_breakout_atr: float = 0.35
     sensex_opt_volume_multiplier: float = 1.3
-    sensex_opt_target_points: float = 6.0
-    sensex_opt_stop_points: float = 2.5
-    sensex_opt_trail_atr: float = 0.75
+    sensex_opt_target_points: float = 20.0
+    sensex_opt_stop_points: float = 10.0
+    sensex_opt_trail_atr: float = 0.7
     sensex_opt_entry_model: str = "breakout"
     profit_lock_retain_pct: float = 100.0
     profit_target_fallback_pct: float = 11.0
     profit_target_secondary_pct: float = 22.0
     profit_target_primary_pct: float = 33.0
-    max_paper_trade_seconds: int = 180
-    paper_stop_points: float = 3.0
-    paper_target_points: float = 5.0
+    max_paper_trade_seconds: int = 600
+    paper_duplicate_signal_cooldown_seconds: int = 900
+    paper_stop_points: float = 7.0
+    paper_target_points: float = 15.0
+    paper_breakeven_shift_points: float = 8.0
+    option_brokerage_per_order: float = 20.0
+    option_stt_sell_pct: float = 0.0625
+    option_exchange_txn_pct: float = 0.03503
+    option_sebi_pct: float = 0.0001
+    option_stamp_buy_pct: float = 0.003
+    option_gst_pct: float = 18.0
     ai_learning_enabled: bool = True
+    ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = True
-    market_poll_seconds: float = 1.0
+    market_poll_seconds: float = 5.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
 
@@ -93,8 +109,8 @@ class Settings(BaseSettings):
                 "mode": "runner_profile",
                 "executionStyle": "RUNNER_BREAKOUT",
                 "holdBias": "extend_winners",
-                "partialExitPct": 0.35,
-                "runnerPct": 0.65,
+                "partialExitPct": 0.6,
+                "runnerPct": 0.4,
                 "minTqs": self.sensex_opt_min_tqs,
                 "breakoutAtr": self.sensex_opt_breakout_atr,
                 "volumeMultiplier": self.sensex_opt_volume_multiplier,
@@ -107,9 +123,9 @@ class Settings(BaseSettings):
             "symbol": "NIFTY",
             "mode": "high_win_scalp_profile",
             "executionStyle": "HIGH_WIN_SCALP",
-            "holdBias": "fast_capture",
-            "partialExitPct": 0.7,
-            "runnerPct": 0.3,
+            "holdBias": "adaptive_momentum_capture",
+            "partialExitPct": 0.75,
+            "runnerPct": 0.25,
             "minTqs": self.nifty_opt_min_tqs,
             "breakoutAtr": self.nifty_opt_breakout_atr,
             "volumeMultiplier": self.nifty_opt_volume_multiplier,
