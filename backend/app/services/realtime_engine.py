@@ -130,7 +130,8 @@ class RealTimeMarketEngine:
         positions_task = self._optional(self.client.positions(), "positions", data_warnings)
         orders_task = self._optional(self.client.orders(), "orders", data_warnings)
         external_news_task = self._optional(NewsProvider(self.settings).fetch(selected_symbol), "external_news", data_warnings)
-        upstox_news_task = self._optional(self.client.news_headlines(instrument_key), "upstox_news", data_warnings)
+        use_upstox_news = self.settings.upstox_news_enabled or self.settings.news_provider.lower().strip() == "upstox"
+        upstox_news_task = self._optional(self.client.news_headlines(instrument_key), "upstox_news", data_warnings) if use_upstox_news else asyncio.sleep(0, result=None)
 
         option_chain, candles, ltp_quote, funds, positions, orders, external_news, upstox_news = await asyncio.gather(
             option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, external_news_task, upstox_news_task
@@ -140,7 +141,15 @@ class RealTimeMarketEngine:
         if not (external_news or {}).get("data") and not upstox_news:
             news_reason = (external_news or {}).get("reason") or next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None)
         news_state = NewsEngine().analyze(news_payload, news_reason)
-        news_state["providerStatus"] = {"primary": "finnhub", "external": external_news, "upstox": {"available": bool(upstox_news), "error": next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None)}}
+        news_state["providerStatus"] = {
+            "primary": self.settings.news_provider,
+            "external": external_news,
+            "upstox": {
+                "enabled": use_upstox_news,
+                "available": bool(upstox_news),
+                "error": next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None),
+            },
+        }
 
         chain_rows = option_chain.get("data") or []
         if not chain_rows:
@@ -1419,6 +1428,8 @@ class RealTimeMarketEngine:
 
     def _premarket_analysis(self, phase: MarketPhase, profile: dict[str, Any], bias: dict[str, Any], spread_quality: int, tqs: int) -> dict[str, Any]:
         readiness = "WAIT_FOR_MARKET_OPEN" if phase == MarketPhase.PRE_MARKET_ANALYSIS else "CLOSED_MARKET_REVIEW" if phase != MarketPhase.LIVE_MARKET else "LIVE_MONITORING"
+        open_drive_score = round(clamp((tqs * 0.45) + (spread_quality * 0.25) + (as_float(bias.get("gammaWallScore")) * 0.2) + (10 if bias.get("direction") in {"BULLISH", "BEARISH"} else 0)))
+        instant_bias = "CALL_OPEN_DRIVE" if bias.get("direction") == "BULLISH" else "PUT_OPEN_DRIVE" if bias.get("direction") == "BEARISH" else "WAIT"
         return {
             "readiness": readiness,
             "bias": bias.get("direction"),
@@ -1432,8 +1443,21 @@ class RealTimeMarketEngine:
                 "Confirm first 5-minute candle direction after 09:15 IST",
                 "Trade only if spread quality stays above threshold",
                 "Confirm option-chain OI bias and ATM liquidity before entry",
+                "Keep explosive runner watchlist active every second from pre-open into 09:15 open",
+                "Open only paper trades while ENABLE_LIVE_TRADING=false",
                 "Avoid live orders until ENABLE_LIVE_TRADING is intentionally enabled",
             ],
+            "openDriveReadiness": {
+                "score": open_drive_score,
+                "bias": instant_bias,
+                "state": "ARMED_FOR_PAPER_OPEN" if open_drive_score >= 70 else "WATCH_ONLY" if open_drive_score >= 55 else "WAIT_FOR_CONFIRMATION",
+                "firstMinuteTriggers": [
+                    "Runner score >= EXPLOSIVE_RUNNER_MIN_SCORE",
+                    "Premium LTP expands with bid/ask spread still tradable",
+                    "Option-chain volume/OI confirms the premarket bias",
+                    "No hard no-trade zone after market opens",
+                ],
+            },
             "score": tqs,
             "spreadQuality": spread_quality,
         }
