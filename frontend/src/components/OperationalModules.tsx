@@ -128,7 +128,10 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-bold text-white">{trade.symbol} {trade.strike} {trade.side} | {trade.expiry}</p>
-                  <p className="text-xs text-slate-400">{trade.instrumentKey ?? 'Instrument unavailable'} | Last premium {trade.lastPremium}</p>
+                  <p className="text-xs text-slate-400">
+                    {trade.instrumentKey ?? 'Instrument unavailable'} | Last premium {trade.lastPremium}
+                    {trade.lotSize ? ` | Lot ${trade.lotSize} x ${trade.estimatedLots ?? 0}` : ''}
+                  </p>
                 </div>
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ${trade.action === 'EXECUTION_READY' ? 'bg-emerald-300/10 text-emerald-200' : 'bg-amber-300/10 text-amber-200'}`}>{trade.action.replaceAll('_', ' ')}</span>
               </div>

@@ -48,6 +48,7 @@ class PaperTrade:
     entry_tqs: int
     spread_cost: float
     slippage_estimate: float
+    charges_estimate: float
     opened_at: str
     mode: str
     strategy_type: str = "SCALP"
@@ -71,6 +72,7 @@ class PaperTrade:
             "entryTqs": self.entry_tqs,
             "spreadCost": self.spread_cost,
             "slippageEstimate": self.slippage_estimate,
+            "chargesEstimate": self.charges_estimate,
             "openedAt": self.opened_at,
             "mode": self.mode,
             "strategyType": self.strategy_type,
@@ -280,9 +282,12 @@ class AutoTraderEngine:
 
     def _pre_trade_quality(self, candidate: dict[str, Any]) -> dict[str, Any]:
         premium = float(candidate.get("lastPremium") or 0)
+        quantity = int(candidate.get("quantityEstimate") or candidate.get("lotSize") or 1)
         spread_cost = max(0.0, premium * 0.004)
         slippage = max(0.05, premium * 0.002)
-        required_move = spread_cost + slippage + self.settings.min_required_move_points
+        charges = self._charges_estimate(premium, premium, quantity)
+        charges_per_unit = charges / quantity if quantity > 0 else 0.0
+        required_move = spread_cost + slippage + charges_per_unit + self.settings.min_required_move_points
         reasons = []
         if premium <= 0:
             reasons.append("missing premium")
@@ -299,6 +304,8 @@ class AutoTraderEngine:
             "reason": ", ".join(reasons) if reasons else "quality accepted",
             "spreadCost": round(spread_cost, 2),
             "slippageEstimate": round(slippage, 2),
+            "chargesEstimate": round(charges, 2),
+            "chargesPerUnit": round(charges_per_unit, 4),
             "minimumRequiredMove": round(required_move, 2),
         }
 
@@ -309,6 +316,7 @@ class AutoTraderEngine:
         if self._recent_signal_active(trade_id):
             return None
         quantity = int(candidate.get("quantityEstimate") or 1)
+        charges = self._charges_estimate(float(candidate.get("lastPremium") or 0), float(candidate.get("lastPremium") or 0), max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
             symbol=str(candidate.get("symbol")),
@@ -321,6 +329,7 @@ class AutoTraderEngine:
             entry_tqs=int(candidate.get("tqs") or 0),
             spread_cost=float(quality["spreadCost"]),
             slippage_estimate=float(quality["slippageEstimate"]),
+            charges_estimate=float(quality.get("chargesEstimate") or charges),
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
             strategy_type=str(candidate.get("strategyType") or "SCALP"),
@@ -364,8 +373,10 @@ class AutoTraderEngine:
                 trade.exit_price = current
                 trade.exit_reason = reason
                 trade.exited_at = datetime.now(timezone.utc).isoformat()
-                trade.pnl = (current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity
-                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl}))
+                charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
+                trade.charges_estimate = charges
+                trade.pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges}))
                 self.closed_paper.append(trade)
                 AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
@@ -383,11 +394,13 @@ class AutoTraderEngine:
         AutoTraderEngine._shared_last_learning_update = datetime.now(timezone.utc).isoformat()
 
     def _slippage_summary(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
-        estimates = [self._pre_trade_quality(candidate)["slippageEstimate"] for candidate in candidates]
+        qualities = [self._pre_trade_quality(candidate) for candidate in candidates]
+        estimates = [quality["slippageEstimate"] for quality in qualities]
         return {
             "averageExpectedSlippage": round(sum(estimates) / len(estimates), 2) if estimates else 0,
+            "averageEstimatedCharges": round(sum(float(quality.get("chargesEstimate") or 0) for quality in qualities) / len(qualities), 2) if qualities else 0,
             "minimumRequiredMovePoints": self.settings.min_required_move_points,
-            "model": "premium_based_spread_slippage_guard",
+            "model": "premium_spread_slippage_plus_india_options_charges",
         }
 
     def _position_sizing_summary(self, candidates: list[dict[str, Any]], capital: float) -> dict[str, Any]:
@@ -397,6 +410,8 @@ class AutoTraderEngine:
                 {
                     "id": candidate.get("id"),
                     "quantityEstimate": candidate.get("quantityEstimate", 0),
+                    "lotSize": candidate.get("lotSize"),
+                    "estimatedLots": candidate.get("estimatedLots"),
                     "allocationPct": candidate.get("allocationPct", 0),
                     "tqs": candidate.get("tqs"),
                 }
@@ -437,6 +452,21 @@ class AutoTraderEngine:
             return (datetime.now(timezone.utc) - datetime.fromisoformat(iso_timestamp)).total_seconds()
         except ValueError:
             return 0.0
+
+    def _charges_estimate(self, entry_price: float, exit_price: float, quantity: int) -> float:
+        quantity = max(0, int(quantity))
+        if quantity <= 0:
+            return 0.0
+        buy_turnover = max(0.0, entry_price) * quantity
+        sell_turnover = max(0.0, exit_price) * quantity
+        total_turnover = buy_turnover + sell_turnover
+        brokerage = min(float(self.settings.option_brokerage_per_order), buy_turnover) + min(float(self.settings.option_brokerage_per_order), sell_turnover)
+        stt = sell_turnover * float(self.settings.option_stt_sell_pct) / 100
+        exchange_txn = total_turnover * float(self.settings.option_exchange_txn_pct) / 100
+        sebi = total_turnover * float(self.settings.option_sebi_pct) / 100
+        stamp = buy_turnover * float(self.settings.option_stamp_buy_pct) / 100
+        gst = (brokerage + exchange_txn + sebi) * float(self.settings.option_gst_pct) / 100
+        return round(brokerage + stt + exchange_txn + sebi + stamp + gst, 2)
 
     def _max_drawdown(self, pnls: list[float]) -> float:
         equity = 0.0

@@ -112,6 +112,7 @@ class RealTimeMarketEngine:
         self.previous_options: dict[str, PreviousTick] = {}
         self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._expiry_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._contract_meta: dict[str, dict[str, Any]] = {}
         self._account_cache: tuple[float, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] | None = None
 
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
@@ -484,6 +485,16 @@ class RealTimeMarketEngine:
                 warnings.append(f"Configured {symbol}_EXPIRY_DATE={configured} not found in Upstox contracts; using nearest available {selected}.")
 
         selected_contracts = [item for item in contracts if item.get("expiry") == selected]
+        self._contract_meta.update({
+            str(item.get("instrument_key")): {
+                "lotSize": as_int(item.get("lot_size") or item.get("minimum_lot"), 1),
+                "minimumLot": as_int(item.get("minimum_lot") or item.get("lot_size"), 1),
+                "freezeQuantity": as_int(item.get("freeze_quantity"), 0),
+                "tradingSymbol": item.get("trading_symbol"),
+            }
+            for item in selected_contracts
+            if item.get("instrument_key")
+        })
         payload = {
             "symbol": symbol,
             "underlyingInstrumentKey": instrument_key,
@@ -498,6 +509,26 @@ class RealTimeMarketEngine:
         payload["cache"] = {"hit": False, "ageSeconds": 0, "ttlSeconds": self.settings.expiry_cache_seconds}
         self._expiry_cache[symbol] = (monotonic(), deepcopy(payload))
         return payload
+
+    def _contract_details(self, instrument_key: str | None) -> dict[str, Any]:
+        if not instrument_key:
+            return {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None}
+        return self._contract_meta.get(str(instrument_key)) or {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None}
+
+    def _lot_sized_position(self, instrument_key: str | None, premium: float, risk_capital: float) -> dict[str, Any]:
+        details = self._contract_details(instrument_key)
+        lot_size = max(1, as_int(details.get("lotSize"), 1))
+        if premium <= 0 or risk_capital <= 0:
+            lots = 0
+        else:
+            lots = int(risk_capital // (premium * lot_size))
+        quantity = lots * lot_size
+        return {
+            **details,
+            "lots": lots,
+            "quantity": quantity,
+            "notional": round(quantity * premium, 2),
+        }
 
     async def _optional(self, coroutine: Any, label: str, warnings: list[str]) -> dict[str, Any] | None:
         try:
@@ -893,6 +924,7 @@ class RealTimeMarketEngine:
                 signal["id"] = f"{symbol}-{expiry}-{strike}-{side}-RUNNER"
                 signal["lastPremium"] = premium
                 signal["premiumRange"] = {"min": premium_min, "max": premium_max, "withinRange": True}
+                signal["contract"] = self._contract_details(instrument_key)
                 signal["orderflow"] = orderflow
                 signal["volumeState"] = volume_state
                 signal["monitoringCadenceSeconds"] = self.settings.market_poll_seconds
@@ -988,7 +1020,8 @@ class RealTimeMarketEngine:
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
-            quantity_estimate = int(risk_capital // premium) if premium > 0 and risk_capital > 0 else 0
+            position = self._lot_sized_position(str(signal.get("instrumentKey") or ""), premium, risk_capital)
+            quantity_estimate = int(position["quantity"])
             allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
             volume_state = signal.get("volumeState") or {}
             trades.append(
@@ -1005,6 +1038,9 @@ class RealTimeMarketEngine:
                     "tradingCapital": trading_capital,
                     "riskCapital": round(risk_capital, 2),
                     "maxExposurePct": self.settings.max_exposure_pct,
+                    "lotSize": position["lotSize"],
+                    "estimatedLots": position["lots"],
+                    "tradingSymbol": position.get("tradingSymbol"),
                     "quantityEstimate": quantity_estimate,
                     "allocationPct": allocation_pct,
                     "chopBlocked": False,
@@ -1485,7 +1521,9 @@ class RealTimeMarketEngine:
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
-        quantity_estimate = int(trading_capital // premium) if premium > 0 and trading_capital > 0 else 0
+        risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
+        position = self._lot_sized_position(instrument, premium, risk_capital)
+        quantity_estimate = int(position["quantity"])
         allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
         return [
             {
@@ -1499,6 +1537,11 @@ class RealTimeMarketEngine:
                 "instrumentKey": instrument,
                 "lastPremium": premium,
                 "tradingCapital": trading_capital,
+                "riskCapital": round(risk_capital, 2),
+                "maxExposurePct": self.settings.max_exposure_pct,
+                "lotSize": position["lotSize"],
+                "estimatedLots": position["lots"],
+                "tradingSymbol": position.get("tradingSymbol"),
                 "quantityEstimate": quantity_estimate,
                 "allocationPct": allocation_pct,
                 "chopBlocked": chop_filter.get("blocked", False),

@@ -270,6 +270,11 @@ export interface SuggestedTrade {
   instrumentKey?: string;
   lastPremium: number;
   tradingCapital?: number;
+  riskCapital?: number;
+  maxExposurePct?: number;
+  lotSize?: number;
+  estimatedLots?: number;
+  tradingSymbol?: string;
   quantityEstimate?: number;
   allocationPct?: number;
   chopBlocked?: boolean;

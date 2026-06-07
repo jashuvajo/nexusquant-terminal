@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     paper_duplicate_signal_cooldown_seconds: int = 900
     paper_stop_points: float = 3.0
     paper_target_points: float = 5.0
+    option_brokerage_per_order: float = 20.0
+    option_stt_sell_pct: float = 0.0625
+    option_exchange_txn_pct: float = 0.03503
+    option_sebi_pct: float = 0.0001
+    option_stamp_buy_pct: float = 0.003
+    option_gst_pct: float = 18.0
     ai_learning_enabled: bool = True
     ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_trading: bool = True
