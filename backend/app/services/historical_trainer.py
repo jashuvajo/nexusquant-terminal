@@ -142,8 +142,13 @@ class HistoricalTrainer:
             if not expiries:
                 return {"available": False, "reason": f"No Upstox option expiries returned for {symbol}", "samples": 0, "warnings": warnings}
             future_expiries = [item for item in expiries if date.fromisoformat(item) >= today]
-            expiry = future_expiries[0] if future_expiries else expiries[0]
-            contracts = [item for item in all_contracts if item.get("expiry") == expiry]
+            if high_profit_only:
+                selected_expiries = (future_expiries or expiries)[:4]
+                expiry = ",".join(selected_expiries)
+                contracts = [item for item in all_contracts if item.get("expiry") in selected_expiries]
+            else:
+                expiry = future_expiries[0] if future_expiries else expiries[0]
+                contracts = [item for item in all_contracts if item.get("expiry") == expiry]
         if not contracts:
             return {"available": False, "reason": f"No option contracts returned for {symbol} expiry {expiry}", "samples": 0, "warnings": warnings}
         selected_contracts = self._select_option_contracts(contracts, max_contracts)
