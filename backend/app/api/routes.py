@@ -538,7 +538,13 @@ async def analytics_ltp_ranges(
         try:
             expiry_state = await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
             chain = await client.option_chain(settings.instrument_key_for(symbol), expiry_state["selectedExpiry"])
-            current_ranges = analyzer.analyze_option_chain(chain)
+            current_ranges = analyzer.analyze_option_chain(
+                chain,
+                capital=settings.trading_capital_default,
+                max_exposure_pct=settings.max_exposure_pct,
+                premium_min=settings.explosive_runner_premium_min,
+                premium_max=settings.explosive_runner_premium_max,
+            )
             training = None
             if train:
                 training = await trainer.train(symbol, target_trades)

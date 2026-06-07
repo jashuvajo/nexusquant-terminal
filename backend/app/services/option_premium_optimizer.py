@@ -109,8 +109,18 @@ class OptionPremiumOptimizer:
         return [item for item in contracts if item.get("expiry") == expiry], expiry, warnings
 
     def _parameter_grid(self, limit: int) -> list[OptionPremiumParams]:
+        premium_min = max(0.0, float(self.settings.explosive_runner_premium_min))
+        premium_max = max(premium_min, float(self.settings.explosive_runner_premium_max))
+        premium_bins = []
+        for low, high in [(0, 25), (25, 50), (50, 100), (100, 150), (150, 250), (250, 500)]:
+            band_low = max(low, premium_min)
+            band_high = min(high, premium_max)
+            if band_high > band_low:
+                premium_bins.append((band_low, band_high))
+        if not premium_bins:
+            premium_bins = [(premium_min, premium_max)]
         raw = product(
-            [(0, 25), (25, 50), (50, 100), (100, 150), (150, 250), (250, 500)],
+            premium_bins,
             [0.05, 0.1, 0.15, 0.25],
             [1.0, 1.2, 1.5, 2.0],
             [0.15, 0.3, 0.5, 1.0],
@@ -143,7 +153,23 @@ class OptionPremiumOptimizer:
             future = candles[i + 1:i + 1 + params.max_hold_bars]
             exit_price, reason, mfe, mae = self._exit(entry, future, params)
             pnl = exit_price - entry - max(0.05, entry * 0.003)
-            trades.append({"pnl": round(pnl, 2), "entry": entry, "exit": exit_price, "exitReason": reason, "mfe": mfe, "mae": mae, "instrumentKey": contract.get("instrument_key"), "strike": contract.get("strike_price")})
+            risk_capital = max(0.0, float(self.settings.trading_capital_default) * max(0, self.settings.max_exposure_pct) / 100)
+            quantity = int(risk_capital // entry) if risk_capital > 0 and entry > 0 else 1
+            if risk_capital > 0 and quantity <= 0:
+                continue
+            trades.append({
+                "pnl": round(pnl, 2),
+                "pnlAmount": round(pnl * quantity, 2),
+                "entry": entry,
+                "exit": exit_price,
+                "exitReason": reason,
+                "mfe": mfe,
+                "mae": mae,
+                "quantity": quantity,
+                "allocatedCapital": round(quantity * entry, 2),
+                "instrumentKey": contract.get("instrument_key"),
+                "strike": contract.get("strike_price"),
+            })
             if len(trades) >= target:
                 break
         return trades
@@ -172,17 +198,37 @@ class OptionPremiumOptimizer:
         return round(exit_price, 2), reason, round(mfe, 2), round(mae, 2)
 
     def _metrics(self, params: OptionPremiumParams, trades: list[dict[str, Any]], objective: str) -> dict[str, Any]:
-        wins = [t for t in trades if t["pnl"] > 0]
-        losses = [t for t in trades if t["pnl"] < 0]
-        gp = sum(t["pnl"] for t in wins)
-        gl = abs(sum(t["pnl"] for t in losses))
+        wins = [t for t in trades if t["pnlAmount"] > 0]
+        losses = [t for t in trades if t["pnlAmount"] < 0]
+        gp = sum(t["pnlAmount"] for t in wins)
+        gl = abs(sum(t["pnlAmount"] for t in losses))
         pf = round(gp / gl, 3) if gl else round(gp, 3)
         wr = round(len(wins) / len(trades) * 100, 2) if trades else 0
-        dd = self._max_drawdown([t["pnl"] for t in trades])
-        balanced = round(min(pf, 5) * 25 + wr * 0.45 - dd * 0.04 + min(len(trades), 1000) * 0.01, 3)
-        high_win = round(wr * 1.4 + min(pf, 3) * 20 - dd * 0.06 - (25 if pf < 1.5 else 0), 3)
-        score = {"balanced": balanced, "high_win_scalp": high_win, "profit_factor": min(pf, 5) * 30 + wr * 0.2, "low_drawdown": min(pf, 4) * 20 - dd * 0.2}.get(objective, balanced)
-        return {"params": asdict(params), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winRate": wr, "profitFactor": pf, "grossProfit": round(gp, 2), "grossLoss": round(gl, 2), "maxDrawdown": round(dd, 2), "objectiveScore": round(score, 3), "objective": objective}
+        dd = self._max_drawdown([t["pnlAmount"] for t in trades])
+        capital = max(0.0, float(self.settings.trading_capital_default))
+        return_pct = round(((gp - gl) / capital) * 100, 2) if capital else 0.0
+        drawdown_pct = round((dd / capital) * 100, 2) if capital else round(dd, 2)
+        balanced = round(min(pf, 5) * 25 + wr * 0.45 - drawdown_pct * 4 + min(len(trades), 1000) * 0.01, 3)
+        high_win = round(wr * 1.4 + min(pf, 3) * 20 - drawdown_pct * 6 - (25 if pf < 1.5 else 0), 3)
+        score = {"balanced": balanced, "high_win_scalp": high_win, "profit_factor": min(pf, 5) * 30 + wr * 0.2, "low_drawdown": min(pf, 4) * 20 - drawdown_pct * 20}.get(objective, balanced)
+        return {
+            "params": asdict(params),
+            "capitalBase": capital,
+            "riskCapitalPerTrade": round(capital * max(0, self.settings.max_exposure_pct) / 100, 2) if capital else 0.0,
+            "trades": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRate": wr,
+            "profitFactor": pf,
+            "grossProfit": round(gp, 2),
+            "grossLoss": round(gl, 2),
+            "netProfit": round(gp - gl, 2),
+            "returnPct": return_pct,
+            "maxDrawdown": round(dd, 2),
+            "maxDrawdownPct": drawdown_pct,
+            "objectiveScore": round(score, 3),
+            "objective": objective,
+        }
 
     def _max_drawdown(self, pnls: list[float]) -> float:
         equity = 0.0

@@ -806,7 +806,12 @@ class RealTimeMarketEngine:
         if not self.settings.explosive_runner_enabled:
             return []
         engine = ExplosiveRunnerEngine(option_premium_history_available=self.settings.option_premium_history_available)
-        nearest = sorted(rows, key=lambda row: abs(as_float(row.get("strike_price")) - spot))[: max(1, self.settings.explosive_runner_scan_strikes)]
+        scan_limit = max(1, self.settings.explosive_runner_scan_strikes)
+        premium_min = max(0.0, float(self.settings.explosive_runner_premium_min))
+        premium_max = max(premium_min, float(self.settings.explosive_runner_premium_max))
+        sorted_rows = sorted(rows, key=lambda row: abs(as_float(row.get("strike_price")) - spot))
+        in_range_rows = [row for row in sorted_rows if self._row_has_premium_in_range(row, premium_min, premium_max)]
+        nearest = (in_range_rows or sorted_rows)[:scan_limit]
         watchlist: list[dict[str, Any]] = []
         for row in nearest:
             strike = as_int(row.get("strike_price"))
@@ -817,6 +822,9 @@ class RealTimeMarketEngine:
                 if premium <= 0:
                     continue
                 instrument_key = option.get("instrument_key")
+                if not self._premium_in_runner_range(premium):
+                    watchlist.append(self._explosive_runner_range_rejected(symbol, expiry, strike, side, instrument_key, premium))
+                    continue
                 volume_state = self._single_option_volume_state(md)
                 orderflow = self._single_option_orderflow(symbol, spot, side, instrument_key, md, volume_state)
                 greeks = self._single_option_greeks(option.get("option_greeks") or {})
@@ -839,12 +847,54 @@ class RealTimeMarketEngine:
                 )
                 signal["id"] = f"{symbol}-{expiry}-{strike}-{side}-RUNNER"
                 signal["lastPremium"] = premium
+                signal["premiumRange"] = {"min": premium_min, "max": premium_max, "withinRange": True}
                 signal["orderflow"] = orderflow
                 signal["volumeState"] = volume_state
                 signal["monitoringCadenceSeconds"] = self.settings.market_poll_seconds
                 signal["watchMode"] = "ALWAYS_ON_OPEN_EXPLOSIVE_SCAN"
                 watchlist.append(signal)
         return sorted(watchlist, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score"))), reverse=True)
+
+    def _row_has_premium_in_range(self, row: dict[str, Any], premium_min: float, premium_max: float) -> bool:
+        for option_key in ["call_options", "put_options"]:
+            md = ((row.get(option_key) or {}).get("market_data") or {})
+            premium = as_float(md.get("ltp"))
+            if premium_min <= premium <= premium_max:
+                return True
+        return False
+
+    def _premium_in_runner_range(self, premium: float) -> bool:
+        return self.settings.explosive_runner_premium_min <= premium <= self.settings.explosive_runner_premium_max
+
+    def _explosive_runner_range_rejected(self, symbol: str, expiry: str, strike: int, side: str, instrument_key: str | None, premium: float) -> dict[str, Any]:
+        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        reason = f"premium {premium:.2f} outside configured runner range {premium_min:.2f}-{premium_max:.2f}"
+        return {
+            "id": f"{symbol}-{expiry}-{strike}-{side}-RUNNER-RANGE-REJECTED",
+            "strategyType": "EXPLOSIVE_RUNNER",
+            "candidate": False,
+            "confidence": "FILTERED",
+            "score": 0,
+            "symbol": symbol,
+            "side": side,
+            "strike": strike,
+            "expiry": expiry,
+            "instrumentKey": instrument_key,
+            "premium": premium,
+            "lastPremium": premium,
+            "premiumRange": {"min": premium_min, "max": premium_max, "withinRange": False},
+            "targetPremiumPct": 0,
+            "hardStopPct": 0,
+            "trailPct": 0,
+            "partialExitPct": 0,
+            "runnerPct": 0,
+            "reasons": [reason],
+            "dataStatus": {"trainingMode": "premium_filtered_for_100000_capital_backtest"},
+            "metrics": {},
+            "watchMode": "FILTERED_BY_PREMIUM_RANGE",
+            "monitoringCadenceSeconds": self.settings.market_poll_seconds,
+        }
 
     def _explosive_runner_disabled(self, symbol: str, expiry: str) -> dict[str, Any]:
         return {
@@ -883,7 +933,8 @@ class RealTimeMarketEngine:
             if not signal.get("candidate") or as_float(signal.get("score")) < self.settings.explosive_runner_min_score:
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
-            quantity_estimate = int(trading_capital // premium) if premium > 0 and trading_capital > 0 else 0
+            risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
+            quantity_estimate = int(risk_capital // premium) if premium > 0 and risk_capital > 0 else 0
             allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
             volume_state = signal.get("volumeState") or {}
             trades.append(
@@ -898,6 +949,8 @@ class RealTimeMarketEngine:
                     "instrumentKey": signal.get("instrumentKey"),
                     "lastPremium": premium,
                     "tradingCapital": trading_capital,
+                    "riskCapital": round(risk_capital, 2),
+                    "maxExposurePct": self.settings.max_exposure_pct,
                     "quantityEstimate": quantity_estimate,
                     "allocationPct": allocation_pct,
                     "chopBlocked": False,
@@ -915,6 +968,7 @@ class RealTimeMarketEngine:
                     "safeMode": safe_mode,
                     "entryRules": [
                         "Paper-only explosive runner candidate while ENABLE_LIVE_TRADING=false",
+                        f"Premium must stay inside {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f} for 100000 capital backtest sizing",
                         "Monitor every configured second from backend background loop and UI polling",
                         "Require premium expansion, spread quality, volume/OI and delta velocity to remain supportive",
                     ],

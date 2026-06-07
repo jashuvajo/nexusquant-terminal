@@ -22,15 +22,28 @@ LTP_BINS = [
 
 
 class LtpRangeAnalyzer:
-    def analyze_option_chain(self, option_chain: dict[str, Any]) -> dict[str, Any]:
+    def analyze_option_chain(
+        self,
+        option_chain: dict[str, Any],
+        *,
+        capital: float = 0.0,
+        max_exposure_pct: float = 100.0,
+        premium_min: float = 0.0,
+        premium_max: float = 1_000_000.0,
+    ) -> dict[str, Any]:
         rows = option_chain.get("data") or []
+        risk_capital = max(0.0, capital * max(0.0, max_exposure_pct) / 100)
         bins: dict[str, dict[str, Any]] = {}
         for low, high in LTP_BINS:
             label = f"{low}-{high}" if high < 1_000_000 else f"{low}+"
+            midpoint = (low + high) / 2 if high < 1_000_000 else low
+            in_configured_range = low < premium_max and high > premium_min
             bins[label] = {
                 "range": label,
                 "low": low,
                 "high": high if high < 1_000_000 else None,
+                "configuredRunnerRange": in_configured_range,
+                "estimatedQuantityAtRiskCapital": int(risk_capital // midpoint) if risk_capital > 0 and midpoint > 0 else 0,
                 "contracts": 0,
                 "avgSpreadPct": 0.0,
                 "totalVolume": 0,
@@ -77,13 +90,19 @@ class LtpRangeAnalyzer:
                 oi_score = min(20, item["totalOi"] / 1000000)
                 spread_score = max(0, 25 - item["avgSpreadPct"] * 2)
                 delta_score = min(15, item["avgDelta"] * 25)
-                item["score"] = round(liquidity_score + oi_score + spread_score + delta_score, 2)
+                quantity_score = min(15, item["estimatedQuantityAtRiskCapital"] / 10) if item["configuredRunnerRange"] else -35
+                item["score"] = round(liquidity_score + oi_score + spread_score + delta_score + quantity_score, 2)
         ranked = sorted(bins.values(), key=lambda item: item["score"], reverse=True)
+        capital_fit = [item for item in ranked if item["configuredRunnerRange"] and item["estimatedQuantityAtRiskCapital"] > 0 and item["contracts"] > 0]
         return {
             "analysisType": "CURRENT_OPTION_PREMIUM_LTP_RANGE",
             "bestRange": ranked[0] if ranked else None,
+            "capitalFitRange": capital_fit[0] if capital_fit else None,
+            "capitalBase": capital,
+            "riskCapital": round(risk_capital, 2),
+            "configuredRunnerPremiumRange": {"min": premium_min, "max": premium_max},
             "ranges": ranked,
-            "note": "This is exact current Upstox option-chain premium LTP range analysis, not historical premium-candle backtest.",
+            "note": "This is exact current Upstox option-chain premium LTP range analysis. Capital-fit ranking favors configured runner premium range and estimated quantity under risk capital.",
         }
 
     def _bin_label(self, ltp: float) -> str:

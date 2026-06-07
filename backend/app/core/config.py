@@ -25,13 +25,15 @@ class Settings(BaseSettings):
     safe_mode_threshold: int = 86
     max_exposure_pct: int = 42
     daily_drawdown_pct: float = 3.0
-    trading_capital_default: float = 0.0
+    trading_capital_default: float = 100000.0
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
     option_premium_history_available: bool = True
     explosive_runner_enabled: bool = True
-    explosive_runner_scan_strikes: int = 8
+    explosive_runner_scan_strikes: int = 16
     explosive_runner_min_score: float = 55.0
+    explosive_runner_premium_min: float = 25.0
+    explosive_runner_premium_max: float = 250.0
     background_market_monitor_enabled: bool = True
     news_lookback_items: int = 20
     finnhub_api_key: str | None = None

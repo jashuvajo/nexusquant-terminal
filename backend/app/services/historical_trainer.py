@@ -252,6 +252,8 @@ class HistoricalTrainer:
             entry = current["close"]
             if entry <= 0:
                 continue
+            if not (self.settings.explosive_runner_premium_min <= entry <= self.settings.explosive_runner_premium_max):
+                continue
             mfe = max(candle["high"] - entry for candle in future)
             mae = min(candle["low"] - entry for candle in future)
             target_30 = entry * 0.30
