@@ -93,7 +93,7 @@ def get_event_journal(settings: Settings = Depends(get_settings)) -> EventJourna
 
 
 def get_ai_learner(settings: Settings = Depends(get_settings)) -> ContinuousAILearner:
-    return ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled)
+    return ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled, settings.ai_state_file)
 
 
 def get_auto_trader(

@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     paper_stop_points: float = 3.0
     paper_target_points: float = 5.0
     ai_learning_enabled: bool = True
+    ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = True
