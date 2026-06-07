@@ -16,6 +16,7 @@ from app.services.event_journal import EventJournal
 from app.services.historical_trainer import HistoricalTrainer
 from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.ltp_range_analyzer import LtpRangeAnalyzer
+from app.services.market_movers import summarize_market_movers
 from app.services.news_engine import NewsEngine
 from app.services.news_provider import NewsProvider
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
@@ -237,27 +238,6 @@ async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = D
     return state
 
 
-def _quote_item(instrument_key: str, payload: dict) -> dict:
-    last_price = float(payload.get("last_price") or payload.get("ltp") or 0)
-    ohlc = payload.get("ohlc") or {}
-    previous_close = float(ohlc.get("close") or payload.get("close") or payload.get("prev_close") or 0)
-    net_change = float(payload.get("net_change") or (last_price - previous_close if previous_close else 0))
-    change_pct = round((net_change / previous_close) * 100, 3) if previous_close else 0
-    volume = int(float(payload.get("volume") or payload.get("volume_traded") or 0))
-    average_price = float(payload.get("average_price") or payload.get("avg_price") or last_price or 0)
-    return {
-        "instrumentKey": instrument_key,
-        "symbol": payload.get("symbol") or payload.get("trading_symbol") or instrument_key,
-        "lastPrice": last_price,
-        "previousClose": previous_close,
-        "netChange": round(net_change, 3),
-        "changePct": change_pct,
-        "volume": volume,
-        "value": round(volume * average_price, 2),
-        "averagePrice": average_price,
-    }
-
-
 @router.get("/market/movers")
 async def market_movers(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
     instruments = settings.market_snapshot_instrument_list
@@ -267,22 +247,7 @@ async def market_movers(settings: Settings = Depends(get_settings), client: Upst
         payload = await client.full_market_quote(instruments)
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    data = payload.get("data") or {}
-    items = [_quote_item(key, value or {}) for key, value in data.items()]
-    gainers = sorted(items, key=lambda item: item["changePct"], reverse=True)
-    losers = sorted(items, key=lambda item: item["changePct"])
-    most_active_volume = sorted(items, key=lambda item: item["volume"], reverse=True)
-    most_active_value = sorted(items, key=lambda item: item["value"], reverse=True)
-    return {
-        "source": "upstox_full_market_quote",
-        "configuredInstruments": instruments,
-        "count": len(items),
-        "gainers": gainers[:10],
-        "losers": losers[:10],
-        "mostActiveVolume": most_active_volume[:10],
-        "mostActiveValue": most_active_value[:10],
-        "indices": [item for item in items if "INDEX|" in item["instrumentKey"]],
-    }
+    return summarize_market_movers(instruments, payload)
 
 
 @router.get("/institutional/readiness/{symbol}")

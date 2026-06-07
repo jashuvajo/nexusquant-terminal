@@ -15,6 +15,7 @@ from app.services.ai_engine import TradeQualityScorer
 from app.services.auto_trader import AutoTraderEngine
 from app.services.event_journal import EventJournal
 from app.services.institutional_readiness import InstitutionalReadinessEngine
+from app.services.market_movers import summarize_market_movers
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.storage import AnalyticsStorage
@@ -43,6 +44,8 @@ SNAPSHOTS_STREAMED = Counter("nexusquant_snapshots_streamed_total", "Real Upstox
 STREAM_ERRORS = Counter("nexusquant_stream_errors_total", "Market stream status/error messages sent to clients")
 ACTIVE_WS = Gauge("nexusquant_active_websocket_clients", "Active WebSocket terminal clients")
 LATEST_TQS = Gauge("nexusquant_latest_trade_quality_score", "Latest Trade Quality Score")
+MARKET_SNAPSHOT_CACHE: dict = {"available": False, "reason": "not_refreshed_yet"}
+_market_snapshot_tick = 0.0
 
 
 @asynccontextmanager
@@ -225,6 +228,7 @@ async def build_multi_symbol_snapshot() -> dict:
         "snapshots": snapshots,
         "symbolErrors": errors,
         "executionCandidates": execution_candidates,
+        "marketSnapshot": MARKET_SNAPSHOT_CACHE,
     }
     payload["autoTrader"] = await auto_trader.process(payload)
     payload["institutionalReadiness"] = InstitutionalReadinessEngine().score_snapshot(payload)
@@ -235,8 +239,13 @@ async def build_multi_symbol_snapshot() -> dict:
 
 async def background_market_monitor() -> None:
     """Continuously evaluates runner/paper candidates even when no UI is open."""
+    global _market_snapshot_tick
     while True:
         try:
+            _market_snapshot_tick += max(1.0, float(settings.market_poll_seconds or 1))
+            if settings.market_snapshot_monitor_enabled and _market_snapshot_tick >= max(1.0, float(settings.market_snapshot_poll_seconds or 5)):
+                _market_snapshot_tick = 0.0
+                await refresh_market_snapshot_cache()
             payload = await build_multi_symbol_snapshot()
             LATEST_TQS.set(payload["tradeQualityScore"])
             SNAPSHOTS_STREAMED.inc(len(payload.get("snapshots", {})) or 1)
@@ -247,6 +256,20 @@ async def background_market_monitor() -> None:
         except Exception:
             pass
         await asyncio.sleep(max(1.0, float(settings.market_poll_seconds or 1)))
+
+
+async def refresh_market_snapshot_cache() -> dict:
+    global MARKET_SNAPSHOT_CACHE
+    instruments = settings.market_snapshot_instrument_list
+    if not instruments:
+        MARKET_SNAPSHOT_CACHE = {"available": False, "reason": "MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty"}
+        return MARKET_SNAPSHOT_CACHE
+    try:
+        payload = await upstox_client.full_market_quote(instruments)
+        MARKET_SNAPSHOT_CACHE = {"available": True, **summarize_market_movers(instruments, payload)}
+    except Exception as exc:
+        MARKET_SNAPSHOT_CACHE = {"available": False, "reason": str(exc), "configuredInstruments": instruments}
+    return MARKET_SNAPSHOT_CACHE
 
 async def receive_client_heartbeats(websocket: WebSocket) -> None:
     while True:
