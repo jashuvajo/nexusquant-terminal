@@ -202,6 +202,20 @@ export interface TomorrowTradePlan {
   safeMode: boolean;
 }
 
+export interface MarketSnapshotBreadth {
+  available?: boolean;
+  source?: string;
+  updatedAt?: string;
+  count?: number;
+  breadth?: { advancing: number; declining: number; unchanged: number; score: number; bias: string };
+  gainers?: Array<Record<string, unknown>>;
+  losers?: Array<Record<string, unknown>>;
+  mostActiveVolume?: Array<Record<string, unknown>>;
+  mostActiveValue?: Array<Record<string, unknown>>;
+  indices?: Array<Record<string, unknown>>;
+  reason?: string;
+}
+
 export interface StrategyRoute {
   selected: string;
   aggression: number;
@@ -427,6 +441,7 @@ export interface TerminalSnapshot {
   tomorrowTradePlan?: TomorrowTradePlan;
   suggestedTrades?: SuggestedTrade[];
   autoTrader?: AutoTraderState;
+  marketSnapshot?: MarketSnapshotBreadth;
   symbol: MarketSymbol;
   spot: number;
   atmStrike: number;

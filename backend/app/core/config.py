@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
     market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
+    market_snapshot_monitor_enabled: bool = True
+    market_snapshot_poll_seconds: float = 5.0
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35
