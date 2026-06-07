@@ -555,14 +555,13 @@ async def analytics_ltp_ranges(
             results[symbol] = {"expiryState": expiry_state, "currentPremiumRanges": current_ranges, "historicalTraining": training}
         except Exception as exc:
             errors[symbol] = str(exc)
-    if not results:
-        raise HTTPException(status_code=503, detail=errors)
     return {
+        "available": bool(results),
         "targetTrades": target_trades,
         "trained": train,
         "results": results,
         "errors": errors,
-        "note": "Best premium LTP range uses current option-chain LTP. Historical training uses real Upstox index candles unless exact option premium history is available.",
+        "note": "Best premium LTP range uses current option-chain LTP. Historical training uses real Upstox index candles unless exact option premium history is available. If Upstox rate-limits this request, errors are returned without failing the whole website.",
     }
 
 
