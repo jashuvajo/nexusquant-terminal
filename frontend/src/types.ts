@@ -179,6 +179,12 @@ export interface PremarketAnalysis {
   pcr: number;
   keyLevels: { poc: number; vah: number; val: number };
   checklist: string[];
+  openDriveReadiness?: {
+    score: number;
+    bias: string;
+    state: string;
+    firstMinuteTriggers: string[];
+  };
   score: number;
   spreadQuality: number;
 }

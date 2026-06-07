@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     news_lookback_items: int = 20
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
+    upstox_news_enabled: bool = False
+    market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35
@@ -76,6 +78,10 @@ class Settings(BaseSettings):
 
     def expiry_for(self, symbol: str) -> str | None:
         return self.sensex_expiry_date if symbol.upper() == "SENSEX" else self.nifty_expiry_date
+
+    @property
+    def market_snapshot_instrument_list(self) -> list[str]:
+        return [item.strip() for item in self.market_snapshot_instrument_keys.split(",") if item.strip()]
 
     def optimized_profile_for(self, symbol: str) -> dict[str, float | int | str]:
         if symbol.upper() == "SENSEX":

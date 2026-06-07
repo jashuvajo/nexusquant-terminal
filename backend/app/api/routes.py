@@ -169,6 +169,7 @@ async def deployment_status(
             "/api/market/expiries/NIFTY",
             "/api/market/snapshot/NIFTY",
             "/api/market/snapshots",
+            "/api/market/movers",
             "/api/institutional/readiness/NIFTY",
             "/api/market/news/NIFTY",
             "/api/auto-trader/status",
@@ -223,7 +224,8 @@ async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = D
     external = await NewsProvider(settings).fetch(symbol)
     upstox_payload = None
     upstox_error = None
-    if not external.get("data"):
+    use_upstox_news = settings.upstox_news_enabled or settings.news_provider.lower().strip() == "upstox"
+    if use_upstox_news and not external.get("data"):
         try:
             upstox_payload = await client.news_headlines(settings.instrument_key_for(symbol))
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -231,8 +233,56 @@ async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = D
     payload = external if external.get("data") else upstox_payload
     reason = None if external.get("data") or upstox_payload else external.get("reason") or upstox_error
     state = NewsEngine().analyze(payload, reason)
-    state["providerStatus"] = {"primary": "finnhub", "external": external, "upstox": {"available": bool(upstox_payload), "error": upstox_error}}
+    state["providerStatus"] = {"primary": settings.news_provider, "external": external, "upstox": {"enabled": use_upstox_news, "available": bool(upstox_payload), "error": upstox_error}}
     return state
+
+
+def _quote_item(instrument_key: str, payload: dict) -> dict:
+    last_price = float(payload.get("last_price") or payload.get("ltp") or 0)
+    ohlc = payload.get("ohlc") or {}
+    previous_close = float(ohlc.get("close") or payload.get("close") or payload.get("prev_close") or 0)
+    net_change = float(payload.get("net_change") or (last_price - previous_close if previous_close else 0))
+    change_pct = round((net_change / previous_close) * 100, 3) if previous_close else 0
+    volume = int(float(payload.get("volume") or payload.get("volume_traded") or 0))
+    average_price = float(payload.get("average_price") or payload.get("avg_price") or last_price or 0)
+    return {
+        "instrumentKey": instrument_key,
+        "symbol": payload.get("symbol") or payload.get("trading_symbol") or instrument_key,
+        "lastPrice": last_price,
+        "previousClose": previous_close,
+        "netChange": round(net_change, 3),
+        "changePct": change_pct,
+        "volume": volume,
+        "value": round(volume * average_price, 2),
+        "averagePrice": average_price,
+    }
+
+
+@router.get("/market/movers")
+async def market_movers(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
+    instruments = settings.market_snapshot_instrument_list
+    if not instruments:
+        raise HTTPException(status_code=400, detail="MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty.")
+    try:
+        payload = await client.full_market_quote(instruments)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    data = payload.get("data") or {}
+    items = [_quote_item(key, value or {}) for key, value in data.items()]
+    gainers = sorted(items, key=lambda item: item["changePct"], reverse=True)
+    losers = sorted(items, key=lambda item: item["changePct"])
+    most_active_volume = sorted(items, key=lambda item: item["volume"], reverse=True)
+    most_active_value = sorted(items, key=lambda item: item["value"], reverse=True)
+    return {
+        "source": "upstox_full_market_quote",
+        "configuredInstruments": instruments,
+        "count": len(items),
+        "gainers": gainers[:10],
+        "losers": losers[:10],
+        "mostActiveVolume": most_active_volume[:10],
+        "mostActiveValue": most_active_value[:10],
+        "indices": [item for item in items if "INDEX|" in item["instrumentKey"]],
+    }
 
 
 @router.get("/institutional/readiness/{symbol}")
