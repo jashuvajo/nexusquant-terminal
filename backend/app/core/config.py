@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
-    shadow_trade_all_signals: bool = True
+    shadow_trade_all_signals: bool = False
     market_poll_seconds: float = 5.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
