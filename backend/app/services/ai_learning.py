@@ -149,6 +149,11 @@ class ContinuousAILearner:
         avg_tqs = sum(tqs_values) / len(tqs_values) if tqs_values else float(payload.get("tradeQualityScore") or 50)
         blocked_count = sum(1 for candidate in candidates if candidate.get("chopBlocked"))
         volume_confirmed = sum(1 for candidate in candidates if candidate.get("effectiveVolume", 0) > 0)
+        chart_aligned = sum(
+            1 for candidate in candidates
+            if candidate.get("chartBias") in {"CALL", "PUT"} and candidate.get("side") == candidate.get("chartBias")
+        )
+        runner_candidates = sum(1 for candidate in candidates if candidate.get("strategyType") == "EXPLOSIVE_RUNNER")
         pnl = sum(float(item.get("pnl") or 0) for item in exits)
 
         state["samples"] += 1
@@ -182,6 +187,8 @@ class ContinuousAILearner:
             "avgTqs": round(avg_tqs, 2),
             "blockedCount": blocked_count,
             "volumeConfirmed": volume_confirmed,
+            "chartAligned": chart_aligned,
+            "runnerCandidates": runner_candidates,
             "symbols": list(snapshots.keys()),
         }
         state["lastUpdatedAt"] = datetime.now(timezone.utc).isoformat()

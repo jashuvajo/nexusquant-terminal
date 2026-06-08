@@ -327,6 +327,7 @@ class RealTimeMarketEngine:
             entry_model=entry_model,
             optimized_profile=optimized_profile,
             runner_signal=runner_signal,
+            chart_analysis=chart_analysis,
         )
         suggested_trades.extend(
             self._runner_suggested_trades(
@@ -337,6 +338,7 @@ class RealTimeMarketEngine:
                 option_bias=option_bias,
                 safe_mode=risk_decision.safe_mode,
                 optimized_profile=optimized_profile,
+                chart_analysis=chart_analysis,
                 limit=3,
             )
         )
@@ -1180,6 +1182,7 @@ class RealTimeMarketEngine:
         option_bias: dict[str, Any],
         safe_mode: bool,
         optimized_profile: dict[str, Any],
+        chart_analysis: dict[str, Any] | None = None,
         limit: int = 3,
     ) -> list[dict[str, Any]]:
         trades: list[dict[str, Any]] = []
@@ -1226,6 +1229,9 @@ class RealTimeMarketEngine:
                     "runnerSignal": signal,
                     "tqs": max(68, round(as_float(signal.get("score")))),
                     "confidence": signal.get("confidence"),
+                    "chartBias": (chart_analysis or {}).get("bias"),
+                    "chartTrend": (chart_analysis or {}).get("trend"),
+                    "chartStrength": (chart_analysis or {}).get("strength"),
                     "bias": option_bias.get("direction"),
                     "pcr": option_bias.get("pcr"),
                     "safeMode": safe_mode,
@@ -1692,6 +1698,7 @@ class RealTimeMarketEngine:
         entry_model: dict[str, Any],
         optimized_profile: dict[str, Any],
         runner_signal: dict[str, Any] | None = None,
+        chart_analysis: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
@@ -1731,6 +1738,9 @@ class RealTimeMarketEngine:
                 "runnerSignal": runner_signal,
                 "tqs": tqs,
                 "confidence": confidence,
+                "chartBias": (chart_analysis or {}).get("bias"),
+                "chartTrend": (chart_analysis or {}).get("trend"),
+                "chartStrength": (chart_analysis or {}).get("strength"),
                 "bias": option_bias.get("direction"),
                 "pcr": option_bias.get("pcr"),
                 "safeMode": safe_mode,
