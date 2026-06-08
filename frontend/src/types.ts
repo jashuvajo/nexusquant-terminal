@@ -430,6 +430,16 @@ export interface AutoTraderState {
   positionSizing: { capital: number; candidates: Array<Record<string, unknown>> };
   profitLock?: { capital: number; netPnl: number; tiers: Array<Record<string, unknown>>; activeTier?: Record<string, unknown> | null; lockedProfit: number; givebackAvailable: number; blockNewTrades: boolean; message: string };
   paperRiskHalt?: { blocked: boolean; reason?: string | null; netPnl: number; lossPct: number; consecutiveLosses: number; maxDailyLossPct: number; maxConsecutiveLosses: number };
+  psychology?: {
+    state: string;
+    disciplineScore: number;
+    tradePermission: string;
+    emotionalRisks: string[];
+    behavioralFindings: string[];
+    coachActions: string[];
+    metrics: Record<string, number>;
+    mantra: string;
+  };
   onlineLearning: { enabled: boolean; pretrained?: boolean; priorVersion?: string; mode: string; samples: number; score?: number; learningScore?: number; paperSamples?: number; liveSamples?: number; profitFactor?: number; calibration?: Record<string, unknown>; lastUpdatedAt?: string; note: string };
   dailyReport: {
     totalSignals: number;

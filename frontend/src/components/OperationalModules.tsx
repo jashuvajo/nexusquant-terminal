@@ -570,6 +570,31 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         </div>
       </Card>
 
+      {auto.psychology && (
+        <Card title="Psychology Manager" eyebrow="Discipline, patience, revenge-risk and execution mindset">
+          <div className="grid gap-3 md:grid-cols-3">
+            <MetricCard label="Mindset State" value={auto.psychology.state.replaceAll('_', ' ')} helper={auto.psychology.tradePermission.replaceAll('_', ' ')} tone={auto.psychology.tradePermission === 'WAIT' || auto.psychology.tradePermission === 'BLOCK_NEW_TRADES' ? 'rose' : 'emerald'} />
+            <MetricCard label="Discipline Score" value={auto.psychology.disciplineScore} helper="Higher means calmer selection" tone={auto.psychology.disciplineScore >= 80 ? 'emerald' : auto.psychology.disciplineScore >= 60 ? 'amber' : 'rose'} />
+            <MetricCard label="Emotional Risks" value={auto.psychology.emotionalRisks.length} helper={auto.psychology.emotionalRisks.join(', ') || 'None'} tone={auto.psychology.emotionalRisks.length ? 'amber' : 'emerald'} />
+          </div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-200">Behavioral Findings</p>
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">
+                {auto.psychology.behavioralFindings.length ? auto.psychology.behavioralFindings.map((item) => <li key={item}>{item}</li>) : <li>Behavior is currently stable.</li>}
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-200">Coach Actions</p>
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-200">
+                {auto.psychology.coachActions.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            </div>
+          </div>
+          <p className="mt-4 rounded-2xl bg-slate-950/60 p-3 text-sm text-slate-300">{auto.psychology.mantra}</p>
+        </Card>
+      )}
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card title="Open Paper Trades" eyebrow="Currently shadow-open">
           <div className="space-y-3">

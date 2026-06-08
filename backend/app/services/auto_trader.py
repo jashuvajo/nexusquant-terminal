@@ -174,6 +174,7 @@ class AutoTraderEngine:
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
         profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0))
+        psychology = self._psychology_report(candidates, skipped, risk_halt)
         return {
             "paperTrading": self.settings.paper_trading,
             "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
@@ -195,6 +196,7 @@ class AutoTraderEngine:
             "positionSizing": self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
             "profitLock": profit_lock,
             "paperRiskHalt": risk_halt,
+            "psychology": psychology,
             "onlineLearning": online_learning,
             "dailyReport": self.daily_report(),
         }
@@ -210,6 +212,7 @@ class AutoTraderEngine:
             "replay": {"storedSnapshots": len(self.replay_buffer)},
             "profitLock": self.profit_lock_status(),
             "paperRiskHalt": self._paper_risk_halt(),
+            "psychology": self._psychology_report([], [], self._paper_risk_halt()),
             "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
         }
@@ -710,6 +713,107 @@ class AutoTraderEngine:
             "consecutiveLosses": consecutive_losses,
             "maxDailyLossPct": self.settings.paper_max_daily_loss_pct,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
+        }
+
+    def _psychology_report(self, candidates: list[dict[str, Any]], skipped: list[dict[str, Any]], risk_halt: dict[str, Any]) -> dict[str, Any]:
+        report = self.daily_report()
+        closed = list(self.closed_paper)
+        open_count = len(self.open_paper)
+        paper_trades = int(report.get("paperTrades") or 0)
+        losses = int(report.get("losses") or 0)
+        wins = int(report.get("wins") or 0)
+        profit_factor = float(report.get("profitFactor") or 0)
+        win_rate = float(report.get("winRate") or 0)
+        total_signals = int(report.get("totalSignals") or 0)
+        skipped_reasons = [str(item.get("reason") or "") for item in skipped]
+        chart_conflicts = sum(1 for reason in skipped_reasons if "chart trend conflict" in reason)
+        chop_skips = sum(1 for reason in skipped_reasons if "chop" in reason.lower())
+        duplicate_skips = sum(1 for reason in skipped_reasons if "duplicate" in reason.lower() or "cached" in reason.lower())
+        consecutive_losses = int(risk_halt.get("consecutiveLosses") or 0)
+        loss_pct = float(risk_halt.get("lossPct") or 0)
+        recent_losses = [trade for trade in closed[-5:] if trade.pnl < 0]
+        recent_wins = [trade for trade in closed[-5:] if trade.pnl > 0]
+
+        emotional_risks: list[str] = []
+        behavioral_findings: list[str] = []
+        coach_actions: list[str] = []
+
+        if risk_halt.get("blocked"):
+            emotional_risks.append("revenge_trading_risk")
+            behavioral_findings.append(f"Paper risk halt active: {risk_halt.get('reason')}")
+            coach_actions.append("Stop new entries. Review last 3 losses before allowing the system to resume.")
+        if consecutive_losses >= 2:
+            emotional_risks.append("loss_chasing")
+            behavioral_findings.append(f"{consecutive_losses} consecutive losses detected.")
+            coach_actions.append("Require chart alignment plus runner score >= 90 for the next trade.")
+        if total_signals >= 500 and paper_trades < max(1, total_signals * 0.02):
+            behavioral_findings.append("Good patience: many weak signals are being skipped.")
+        elif paper_trades > 12 and profit_factor < 1:
+            emotional_risks.append("overtrading")
+            behavioral_findings.append("Too many paper trades without profit factor confirmation.")
+            coach_actions.append("Reduce frequency: only A+ chart-aligned runner setups should be accepted.")
+        if chart_conflicts:
+            emotional_risks.append("contrarian_impulse")
+            behavioral_findings.append(f"{chart_conflicts} current candidates conflict with chart bias.")
+            coach_actions.append("Do not fight chart bias unless option tape is exceptional.")
+        if chop_skips:
+            behavioral_findings.append(f"{chop_skips} current candidates rejected due to chop/weak quality.")
+            coach_actions.append("Wait for breakout + delta velocity confirmation; avoid boredom trades.")
+        if open_count > 2:
+            emotional_risks.append("exposure_anxiety")
+            behavioral_findings.append(f"{open_count} paper trades open; exposure may dilute decision quality.")
+            coach_actions.append("Avoid adding another trade until one position closes.")
+        if losses > wins and profit_factor < 1:
+            emotional_risks.append("confidence_drift")
+            coach_actions.append("Judge the system by process quality, not one trade. Keep risk halt rules active.")
+        if recent_wins and recent_losses:
+            behavioral_findings.append("Mixed recent outcomes; avoid increasing aggression after a win.")
+
+        discipline_score = 100
+        discipline_score -= min(35, consecutive_losses * 12)
+        discipline_score -= min(25, int(loss_pct * 8))
+        discipline_score -= 15 if "overtrading" in emotional_risks else 0
+        discipline_score -= 10 if open_count > 2 else 0
+        discipline_score += 8 if duplicate_skips else 0
+        discipline_score += 8 if paper_trades == 0 and total_signals > 20 else 0
+        discipline_score = max(0, min(100, discipline_score))
+
+        if risk_halt.get("blocked"):
+            state = "HALT_AND_REVIEW"
+            permission = "BLOCK_NEW_TRADES"
+        elif discipline_score >= 80 and not emotional_risks:
+            state = "CALM_AND_SELECTIVE"
+            permission = "A_PLUS_ONLY"
+        elif discipline_score >= 60:
+            state = "CAUTIOUS"
+            permission = "A_PLUS_ONLY"
+        else:
+            state = "DEFENSIVE"
+            permission = "WAIT"
+
+        if not coach_actions:
+            coach_actions.append("Stay selective. Let the bot wait for chart-aligned option-tape confirmation.")
+
+        return {
+            "state": state,
+            "disciplineScore": discipline_score,
+            "tradePermission": permission,
+            "emotionalRisks": sorted(set(emotional_risks)),
+            "behavioralFindings": behavioral_findings[:8],
+            "coachActions": coach_actions[:8],
+            "metrics": {
+                "winRate": win_rate,
+                "profitFactor": profit_factor,
+                "paperTrades": paper_trades,
+                "openTrades": open_count,
+                "consecutiveLosses": consecutive_losses,
+                "lossPct": round(loss_pct, 2),
+                "currentSkipped": len(skipped),
+                "chartConflicts": chart_conflicts,
+                "chopSkips": chop_skips,
+                "duplicateSkips": duplicate_skips,
+            },
+            "mantra": "Protect capital first. Trade only when chart, tape, and risk agree.",
         }
 
     def _all_snapshots_cached(self, snapshots: dict[str, Any]) -> bool:
