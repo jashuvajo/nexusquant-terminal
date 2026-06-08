@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+from app.core.db_connect import asyncpg_connect_kwargs
+
+logger = logging.getLogger(__name__)
 
 try:
     import asyncpg  # type: ignore
@@ -26,8 +31,14 @@ class AnalyticsStorage:
     async def connect(self) -> None:
         if asyncpg is not None:
             try:
-                self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=4)
-            except Exception:
+                self._pool = await asyncpg.create_pool(
+                    self.database_url,
+                    min_size=1,
+                    max_size=4,
+                    **asyncpg_connect_kwargs(self.database_url),
+                )
+            except Exception as exc:
+                logger.warning("Postgres analytics storage unavailable: %s", exc)
                 self._pool = None
         if redis is not None:
             try:

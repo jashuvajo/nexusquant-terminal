@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+
+from app.core.db_connect import asyncpg_connect_kwargs
+
+logger = logging.getLogger(__name__)
 
 try:
     import asyncpg  # type: ignore
@@ -26,7 +31,12 @@ class EventJournal:
         if asyncpg is None or not self.database_url:
             return
         try:
-            self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=3)
+            self._pool = await asyncpg.create_pool(
+                self.database_url,
+                min_size=1,
+                max_size=3,
+                **asyncpg_connect_kwargs(self.database_url),
+            )
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
@@ -42,7 +52,8 @@ class EventJournal:
                     )
                     """
                 )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Postgres event journal unavailable: %s", exc)
             self._pool = None
 
     async def close(self) -> None:
