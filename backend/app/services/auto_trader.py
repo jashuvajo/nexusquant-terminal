@@ -52,6 +52,10 @@ class PaperTrade:
     opened_at: str
     mode: str
     strategy_type: str = "SCALP"
+    target_points: float = 0.0
+    stop_points: float = 0.0
+    breakeven_shift_points: float = 0.0
+    trail_points: float = 0.0
     status: str = "OPEN"
     exit_price: float | None = None
     exit_reason: str | None = None
@@ -79,6 +83,10 @@ class PaperTrade:
             "openedAt": self.opened_at,
             "mode": self.mode,
             "strategyType": self.strategy_type,
+            "targetPoints": round(self.target_points, 2),
+            "stopPoints": round(self.stop_points, 2),
+            "breakevenShiftPoints": round(self.breakeven_shift_points, 2),
+            "trailPoints": round(self.trail_points, 2),
             "status": self.status,
             "exitPrice": self.exit_price,
             "exitReason": self.exit_reason,
@@ -339,6 +347,7 @@ class AutoTraderEngine:
             quantity = desired_quantity
         if quantity < lot_size:
             return None
+        risk_plan = self._paper_risk_plan(candidate, quality, premium)
         charges = self._charges_estimate(premium, premium, max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
@@ -356,10 +365,14 @@ class AutoTraderEngine:
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
             strategy_type=str(candidate.get("strategyType") or "SCALP"),
+            target_points=risk_plan["targetPoints"],
+            stop_points=risk_plan["stopPoints"],
+            breakeven_shift_points=risk_plan["breakevenShiftPoints"],
+            trail_points=risk_plan["trailPoints"],
             best_price=premium,
         )
         trade.lifecycle.extend([
-            LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], quality),
+            LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], {**quality, "riskPlan": risk_plan}),
             LifecycleEvent("PAPER_OPENED", trade.opened_at, "Shadow trade opened; no broker order placed", {"entry": trade.entry_price}),
         ])
         self.open_paper[trade.id] = trade
@@ -387,10 +400,10 @@ class AutoTraderEngine:
             age = self._age_seconds(trade.opened_at)
             reason = None
             profile = (candidate or {}).get("optimizedProfile") or {}
-            target_points = float(profile.get("targetPoints") or self.settings.paper_target_points)
-            stop_points = float(profile.get("stopPoints") or self.settings.paper_stop_points)
+            target_points = float(trade.target_points or profile.get("targetPoints") or self.settings.paper_target_points)
+            stop_points = float(trade.stop_points or profile.get("stopPoints") or self.settings.paper_stop_points)
             partial_exit_at = max(1.0, target_points * float(profile.get("partialExitPct") or 0.6))
-            breakeven_shift = float(self.settings.paper_breakeven_shift_points)
+            breakeven_shift = float(trade.breakeven_shift_points or self.settings.paper_breakeven_shift_points)
             style = str(profile.get("executionStyle") or "GENERIC")
             if style == "RUNNER_BREAKOUT":
                 target_points = max(target_points, self.settings.paper_target_points * 1.2)
@@ -530,6 +543,30 @@ class AutoTraderEngine:
         stamp = buy_turnover * float(self.settings.option_stamp_buy_pct) / 100
         gst = (brokerage + exchange_txn + sebi) * float(self.settings.option_gst_pct) / 100
         return round(brokerage + stt + exchange_txn + sebi + stamp + gst, 2)
+
+    def _paper_risk_plan(self, candidate: dict[str, Any], quality: dict[str, Any], premium: float) -> dict[str, float]:
+        profile = candidate.get("optimizedProfile") or {}
+        runner = candidate.get("runnerSignal") or {}
+        metrics = runner.get("metrics") or {}
+        target = float(profile.get("targetPoints") or self.settings.paper_target_points)
+        base_stop = float(profile.get("stopPoints") or self.settings.paper_stop_points)
+        breakeven = float(self.settings.paper_breakeven_shift_points)
+        runner_score = float(runner.get("score") or 0)
+        breakout = float(metrics.get("breakoutVelocity") or 0)
+        delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
+        costs_per_unit = float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0)
+        # Low-premium options can lose too much if we use a fixed 7/10 point stop.
+        premium_stop_cap_pct = 0.10 if runner_score >= 85 and breakout >= 65 and delta_velocity >= 45 else 0.08
+        premium_capped_stop = max(costs_per_unit + 1.0, premium * premium_stop_cap_pct) if premium > 0 else base_stop
+        stop = min(base_stop, premium_capped_stop) if premium > 0 else base_stop
+        stop = max(costs_per_unit + 0.75, stop)
+        trail = max(1.5, target * (0.45 if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" else 0.35))
+        return {
+            "targetPoints": round(target, 2),
+            "stopPoints": round(stop, 2),
+            "breakevenShiftPoints": round(min(breakeven, max(1.5, target * 0.6)), 2),
+            "trailPoints": round(trail, 2),
+        }
 
     def _max_drawdown(self, pnls: list[float]) -> float:
         equity = 0.0

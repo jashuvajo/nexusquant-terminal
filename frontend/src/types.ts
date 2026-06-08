@@ -376,6 +376,10 @@ export interface PaperTrade {
   openedAt: string;
   mode: string;
   status: string;
+  targetPoints?: number;
+  stopPoints?: number;
+  breakevenShiftPoints?: number;
+  trailPoints?: number;
   exitPrice?: number | null;
   exitReason?: string | null;
   exitedAt?: string | null;
