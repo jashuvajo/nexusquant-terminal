@@ -463,6 +463,9 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
 
 export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
   const auto = snapshot.autoTrader;
+  const slippageModel = auto?.slippageModel ?? { averageExpectedSlippage: 0, minimumRequiredMovePoints: 0, model: 'unavailable after market close' };
+  const positionSizing = auto?.positionSizing ?? { capital: 0, candidates: [] };
+  const exitRules = auto?.exitEngine?.rules ?? [];
   return (
     <Card title="Backtesting Hub" eyebrow="Paper trading, replay, lifecycle, online learning and daily report">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -500,12 +503,12 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
             <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
               <p className="text-xs font-bold uppercase tracking-[0.24em] text-emerald-200">Exit engine + slippage</p>
               <div className="mt-3 grid gap-2 text-sm text-slate-300">
-                <div className="flex justify-between"><span>Avg expected slippage</span><span className="font-mono text-white">{auto.slippageModel.averageExpectedSlippage}</span></div>
-                <div className="flex justify-between"><span>Min required move</span><span className="font-mono text-white">{auto.slippageModel.minimumRequiredMovePoints}</span></div>
-                <div className="flex justify-between"><span>Position capital</span><span className="font-mono text-white">{formatCurrency(auto.positionSizing.capital)}</span></div>
+                <div className="flex justify-between"><span>Avg expected slippage</span><span className="font-mono text-white">{slippageModel.averageExpectedSlippage}</span></div>
+                <div className="flex justify-between"><span>Min required move</span><span className="font-mono text-white">{slippageModel.minimumRequiredMovePoints}</span></div>
+                <div className="flex justify-between"><span>Position capital</span><span className="font-mono text-white">{formatCurrency(positionSizing.capital)}</span></div>
               </div>
               <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-400">
-                {auto.exitEngine.rules.map((rule) => <li key={rule}>{rule}</li>)}
+                {exitRules.length > 0 ? exitRules.map((rule) => <li key={rule}>{rule}</li>) : <li>Exit engine details available during live snapshot processing.</li>}
               </ul>
             </div>
           </div>
@@ -549,19 +552,25 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
     );
   }
 
-  const openPnl = auto.openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
-  const closedPnl = auto.closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const openPaperTrades = auto.openPaperTrades ?? [];
+  const closedPaperTrades = auto.closedPaperTrades ?? [];
+  const skippedSignals = auto.skippedSignals ?? [];
+  const orderLifecycle = auto.orderLifecycle ?? [];
+  const replay = auto.replay ?? { storedSnapshots: 0 };
+  const dailyReport = auto.dailyReport ?? { paperTrades: 0, openTrades: 0, wins: 0, losses: 0, winRate: 0, grossProfit: 0, grossLoss: 0, profitFactor: 0, maxDrawdown: 0, reasonForLosses: {}, totalSignals: 0 };
+  const openPnl = openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const closedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
 
   return (
     <div className="space-y-4">
       <Card title="Paper Trading Control" eyebrow="Shadow execution without broker orders">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard label="Paper Mode" value={auto.paperTrading ? 'ON' : 'OFF'} helper={auto.shadowTradeAllSignals ? 'Shadow all signals' : 'Quality-gated'} tone={auto.paperTrading ? 'emerald' : 'amber'} />
-          <MetricCard label="Open Paper Trades" value={auto.openPaperTrades.length} helper={`Open PnL ${formatCurrency(openPnl)}`} tone="cyan" />
-          <MetricCard label="Closed Paper Trades" value={auto.closedPaperTrades.length} helper={`Closed PnL ${formatCurrency(closedPnl)}`} tone="violet" />
-          <MetricCard label="Profit Factor" value={auto.dailyReport.profitFactor} helper={`${auto.dailyReport.winRate}% win rate`} tone="emerald" />
-          <MetricCard label="Signals / Tick" value={auto.signalsThisTick} helper={`${auto.skippedSignals.length} skipped shown`} tone="cyan" />
-          <MetricCard label="Replay Buffer" value={auto.replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
+          <MetricCard label="Open Paper Trades" value={openPaperTrades.length} helper={`Open PnL ${formatCurrency(openPnl)}`} tone="cyan" />
+          <MetricCard label="Closed Paper Trades" value={closedPaperTrades.length} helper={`Closed PnL ${formatCurrency(closedPnl)}`} tone="violet" />
+          <MetricCard label="Profit Factor" value={dailyReport.profitFactor} helper={`${dailyReport.winRate}% win rate`} tone="emerald" />
+          <MetricCard label="Signals / Tick" value={auto.signalsThisTick ?? 0} helper={`${skippedSignals.length} skipped shown`} tone="cyan" />
+          <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
           <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
         </div>
@@ -605,8 +614,8 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card title="Open Paper Trades" eyebrow="Currently shadow-open">
           <div className="space-y-3">
-            {auto.openPaperTrades.length === 0 && <p className="text-sm text-slate-400">No open paper trades.</p>}
-            {auto.openPaperTrades.map((trade) => (
+            {openPaperTrades.length === 0 && <p className="text-sm text-slate-400">No open paper trades.</p>}
+            {openPaperTrades.map((trade) => (
               <div key={trade.id} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
                 <div className="flex justify-between gap-3"><span className="font-bold text-white">{trade.symbol} {trade.strike} {trade.side}</span><span className="text-cyan-200">{trade.status}</span></div>
                 <div className="mt-2 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
@@ -620,8 +629,8 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
 
         <Card title="Closed Paper Trades" eyebrow="Recent paper exits">
           <div className="space-y-3">
-            {auto.closedPaperTrades.length === 0 && <p className="text-sm text-slate-400">No closed paper trades yet.</p>}
-            {auto.closedPaperTrades.slice(-10).reverse().map((trade) => (
+            {closedPaperTrades.length === 0 && <p className="text-sm text-slate-400">No closed paper trades yet.</p>}
+            {closedPaperTrades.slice(-10).reverse().map((trade) => (
               <div key={trade.id} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
                 <div className="flex justify-between gap-3"><span className="font-bold text-white">{trade.symbol} {trade.strike} {trade.side}</span><span className={trade.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{formatCurrency(trade.pnl)}</span></div>
                 <p className="mt-1 text-xs text-slate-400">Exit: {trade.exitReason ?? 'n/a'} | Entry {trade.entryPrice} → Exit {trade.exitPrice ?? '-'}</p>
@@ -633,13 +642,13 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
 
       <Card title="Paper Lifecycle Log" eyebrow="Signal, risk, paper-open, exit events">
         <div className="max-h-96 space-y-2 overflow-y-auto pr-1">
-          {auto.orderLifecycle.slice(-40).reverse().map((event, index) => (
+          {orderLifecycle.slice(-40).reverse().map((event, index) => (
             <div key={`${event.timestamp}-${index}`} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300">
               <div className="flex justify-between gap-3"><span className="font-bold text-cyan-200">{event.state}</span><span className="font-mono text-slate-500">{new Date(event.timestamp).toLocaleTimeString()}</span></div>
               <p className="mt-1">{event.reason}</p>
             </div>
           ))}
-          {auto.orderLifecycle.length === 0 && <p className="text-sm text-slate-400">No lifecycle events yet.</p>}
+          {orderLifecycle.length === 0 && <p className="text-sm text-slate-400">No lifecycle events yet.</p>}
         </div>
       </Card>
     </div>
