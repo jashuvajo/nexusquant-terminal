@@ -310,6 +310,20 @@ class AutoTraderEngine:
         charges_per_unit = charges / quantity if quantity > 0 else 0.0
         required_move = spread_cost + slippage + charges_per_unit + self.settings.min_required_move_points
         reasons = []
+        runner = candidate.get("runnerSignal") or {}
+        metrics = runner.get("metrics") or {}
+        runner_score = float(runner.get("score") or 0)
+        breakout = float(metrics.get("breakoutVelocity") or 0)
+        delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
+        chart_bias = str(candidate.get("chartBias") or "")
+        side = str(candidate.get("side") or "")
+        high_conviction_runner = (
+            candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+            and runner.get("confidence") == "HIGH"
+            and runner_score >= 90
+            and breakout >= 75
+            and delta_velocity >= 60
+        )
         if premium <= 0:
             reasons.append("missing premium")
         if candidate.get("chopBlocked"):
@@ -318,11 +332,17 @@ class AutoTraderEngine:
             reasons.append("TQS below production learning threshold")
         if candidate.get("effectiveVolume", 0) <= 0:
             reasons.append("missing effective volume")
+        if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias and not high_conviction_runner:
+            reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
+        if chart_bias == "WAIT" and not high_conviction_runner:
+            reasons.append("chart analysis says wait")
+        if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < 75:
+            reasons.append("runner score below A+ threshold")
         if required_move > self.settings.min_required_move_points * 1.4:
             reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
             "blocked": bool(reasons),
-            "paperEligible": not bool(reasons) or (candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and candidate.get("tqs", 0) >= 76 and not candidate.get("chopBlocked")),
+            "paperEligible": not bool(reasons) or high_conviction_runner,
             "reason": ", ".join(reasons) if reasons else "quality accepted",
             "spreadCost": round(spread_cost, 2),
             "slippageEstimate": round(slippage, 2),
