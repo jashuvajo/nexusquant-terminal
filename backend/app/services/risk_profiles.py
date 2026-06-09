@@ -124,3 +124,116 @@ def adaptive_settings(profile_key: str | None, phase: MarketPhase, regime: str, 
             "maxConsecutiveLosses": 6,
         },
     }
+
+
+def paper_session_adjustments(
+    profile_key: str | None,
+    phase: MarketPhase,
+    regime: str,
+    *,
+    base_min_tqs: int,
+    base_runner_score: float,
+    base_allocation_pct: float,
+    base_duplicate_cooldown: int,
+    base_target_points: float,
+    base_stop_points: float,
+    base_max_hold_seconds: int,
+    open_drive_profit_fallback_pct: float = 11.0,
+    open_drive_profit_secondary_pct: float = 22.0,
+    open_drive_profit_primary_pct: float = 33.0,
+    open_drive_profit_stop_pct: float = 33.0,
+    open_drive_allocation_boost: float = 1.85,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Time-of-day paper trading gates aligned with Indian market session buckets."""
+    bucket = session_bucket(phase, now)
+    adjustments: list[str] = []
+    min_entry_tqs = int(base_min_tqs)
+    min_runner_score = float(base_runner_score)
+    allocation_multiplier = 1.0
+    duplicate_cooldown = int(base_duplicate_cooldown)
+    target_multiplier = 1.0
+    stop_multiplier = 1.0
+    max_hold_seconds = int(base_max_hold_seconds)
+    block_new_paper = False
+    block_reason: str | None = None
+    midday_runner_bypass_score = 90.0
+    profit_fallback_pct: float | None = None
+    profit_secondary_pct: float | None = None
+    profit_primary_pct: float | None = None
+    session_profit_stop_pct: float | None = None
+
+    if bucket == "OPEN_DRIVE":
+        min_entry_tqs = max(58, min_entry_tqs - 4)
+        min_runner_score = max(75.0, min_runner_score - 5.0)
+        allocation_multiplier = max(1.15, float(open_drive_allocation_boost))
+        duplicate_cooldown = max(120, int(duplicate_cooldown * 0.6))
+        target_multiplier = 1.1
+        max_hold_seconds = min(max_hold_seconds + 45, 270)
+        profit_fallback_pct = float(open_drive_profit_fallback_pct)
+        profit_secondary_pct = float(open_drive_profit_secondary_pct)
+        profit_primary_pct = float(open_drive_profit_primary_pct)
+        session_profit_stop_pct = float(open_drive_profit_stop_pct)
+        adjustments.append(
+            f"Open drive: target {profit_secondary_pct:.0f}%/{profit_primary_pct:.0f}% profit lock, "
+            f"size x{allocation_multiplier:.2f}, push for momentum capture 09:15-10:30 IST."
+        )
+    elif bucket == "MIDDAY_CHOP":
+        min_entry_tqs = max(min_entry_tqs + 6, 84)
+        min_runner_score = max(min_runner_score + 5.0, 88.0)
+        allocation_multiplier = 0.55
+        duplicate_cooldown = max(duplicate_cooldown, 360)
+        target_multiplier = 0.9
+        stop_multiplier = 0.85
+        max_hold_seconds = min(max_hold_seconds, 120)
+        block_new_paper = True
+        block_reason = "Midday chop window: paper entries paused unless runner score >= 90 with chart alignment."
+        adjustments.append("Midday chop: block new paper trades except A+ runners; tighter stops and shorter holds.")
+    elif bucket == "CLOSING_MOMENTUM":
+        min_entry_tqs = max(70, min_entry_tqs)
+        min_runner_score = max(80.0, min_runner_score - 2.0)
+        allocation_multiplier = 1.0
+        duplicate_cooldown = max(180, int(duplicate_cooldown * 0.8))
+        target_multiplier = 1.0
+        max_hold_seconds = min(max_hold_seconds, 180)
+        adjustments.append("Closing momentum: moderate gates for continuation setups.")
+    elif bucket == "NORMAL":
+        adjustments.append("Normal session: use configured high-PF thresholds.")
+    elif bucket in {"PREMARKET", "CLOSED"}:
+        block_new_paper = True
+        block_reason = "Outside live F&O session: analysis only, no new paper entries."
+        allocation_multiplier = 0.0
+        adjustments.append("Closed/pre-market: paper entries disabled.")
+
+    if regime in {"REVERSAL_RISK", "CLOSED_MARKET_ANALYSIS"}:
+        min_entry_tqs = max(min_entry_tqs, 84)
+        min_runner_score = max(min_runner_score, 90.0)
+        allocation_multiplier = min(allocation_multiplier, 0.5)
+        block_new_paper = True
+        block_reason = block_reason or "Risk regime: reversal/chop risk elevated; paper entries paused."
+        adjustments.append("Risk regime: tighten gates and pause new paper entries.")
+    elif regime == "TREND_EXPANSION" and bucket in {"OPEN_DRIVE", "CLOSING_MOMENTUM", "NORMAL"}:
+        allocation_multiplier = min(1.25, allocation_multiplier * 1.1)
+        target_multiplier = max(target_multiplier, 1.05)
+        adjustments.append("Trend expansion: modest size/target boost in active session windows.")
+
+    return {
+        "sessionBucket": bucket,
+        "sessionNote": SESSION_NOTES[bucket],
+        "blockNewPaperTrades": block_new_paper,
+        "blockReason": block_reason,
+        "middayRunnerBypassScore": midday_runner_bypass_score,
+        "minEntryTqs": int(min_entry_tqs),
+        "minRunnerScore": round(min_runner_score, 2),
+        "allocationPctMultiplier": round(allocation_multiplier, 3),
+        "effectiveAllocationPct": round(max(0.0, base_allocation_pct * allocation_multiplier), 2),
+        "duplicateCooldownSeconds": int(duplicate_cooldown),
+        "targetPointsMultiplier": round(target_multiplier, 3),
+        "stopPointsMultiplier": round(stop_multiplier, 3),
+        "maxHoldSeconds": int(max_hold_seconds),
+        "profitTargetFallbackPct": profit_fallback_pct,
+        "profitTargetSecondaryPct": profit_secondary_pct,
+        "profitTargetPrimaryPct": profit_primary_pct,
+        "sessionProfitStopPct": session_profit_stop_pct,
+        "adjustments": adjustments,
+    }
