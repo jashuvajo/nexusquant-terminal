@@ -524,8 +524,24 @@ class AutoTraderEngine:
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
         )
 
+    def _is_momentum_aligned_runner(self, candidate: dict[str, Any], runner: dict[str, Any]) -> bool:
+        side = str(candidate.get("side") or runner.get("side") or "").upper()
+        bias = str(runner.get("directionalBias") or candidate.get("directionalBias") or "").upper()
+        if not runner.get("momentumSurge") or not runner.get("momentumAligned"):
+            return False
+        if side == "CALL" and bias == "BULLISH":
+            return True
+        if side == "PUT" and bias == "BEARISH":
+            return True
+        return False
+
+    def _runner_min_score(self, runner: dict[str, Any]) -> float:
+        if runner.get("momentumSurge") and runner.get("momentumAligned"):
+            return float(self.settings.explosive_runner_momentum_min_score)
+        return float(self.settings.explosive_runner_min_score)
+
     def _is_tradeable_explosive_runner(self, candidate: dict[str, Any], market_phase: str | None = None) -> bool:
-        if not self.settings.paper_always_trade_explosive_runners or not self.settings.explosive_runner_enabled:
+        if not self.settings.explosive_runner_enabled:
             return False
         phase = str(market_phase or MarketPhase.LIVE_MARKET.value)
         if phase != MarketPhase.LIVE_MARKET.value:
@@ -533,10 +549,13 @@ class AutoTraderEngine:
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
-        if runner.get("candidate") is False:
+        momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
+        if not momentum_runner and not self.settings.paper_always_trade_explosive_runners:
+            return False
+        if runner.get("candidate") is False and not momentum_runner:
             return False
         score = float(runner.get("score") or candidate.get("tqs") or 0)
-        if score < float(self.settings.explosive_runner_min_score):
+        if score < self._runner_min_score(runner):
             return False
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         if premium <= 0:
@@ -567,9 +586,10 @@ class AutoTraderEngine:
         chart_bias = str(candidate.get("chartBias") or "")
         side = str(candidate.get("side") or "")
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
+        momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
         if premium <= 0:
             reasons.append("missing premium")
-        if candidate.get("chopBlocked"):
+        if candidate.get("chopBlocked") and not momentum_runner:
             reasons.append("chop filter blocked")
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
@@ -581,11 +601,14 @@ class AutoTraderEngine:
                 reasons.append(f"TQS below session threshold ({min_entry_tqs})")
             if candidate.get("effectiveVolume", 0) <= 0:
                 reasons.append("missing effective volume")
-            if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
-                reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
-            if chart_bias == "WAIT":
-                reasons.append("chart analysis says wait")
+            if not momentum_runner:
+                if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
+                    reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
+                if chart_bias == "WAIT":
+                    reasons.append("chart analysis says wait")
             min_runner_score = float(session_adj.get("minRunnerScore") or self.settings.explosive_runner_min_score)
+            if momentum_runner:
+                min_runner_score = min(min_runner_score, float(self.settings.explosive_runner_momentum_min_score))
             if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
                 reasons.append(f"runner score below session threshold ({min_runner_score:g})")
             if required_move > self.settings.min_required_move_points * 1.4:
