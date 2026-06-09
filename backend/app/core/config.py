@@ -68,8 +68,8 @@ class Settings(BaseSettings):
     profit_target_primary_pct: float = 18.0
     max_paper_trade_seconds: int = 240
     paper_duplicate_signal_cooldown_seconds: int = 180
-    paper_trade_allocation_pct: float = 40.0
-    paper_min_trade_allocation_pct: float = 25.0
+    paper_trade_allocation_pct: float = 12.0
+    paper_min_trade_allocation_pct: float = 8.0
     paper_max_daily_loss_pct: float = 2.0
     paper_max_consecutive_losses: int = 8
     paper_daily_profit_stop_pct: float = 18.0
