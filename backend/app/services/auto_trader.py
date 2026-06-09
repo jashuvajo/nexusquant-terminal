@@ -278,6 +278,94 @@ class AutoTraderEngine:
         except Exception:
             return
 
+    async def backtest_missed_trades(
+        self,
+        *,
+        horizon_ticks: int = 60,
+        min_profit_points: float = 8.0,
+        include_losses: bool = True,
+        target_trades: int = 500,
+    ) -> dict[str, Any]:
+        snapshots = list(self.replay_buffer)
+        samples = self._build_replay_training_samples(
+            snapshots,
+            horizon_ticks=horizon_ticks,
+            min_profit_points=min_profit_points,
+            include_losses=include_losses,
+            target_trades=target_trades,
+        )
+        wins = [sample for sample in samples if float(sample.get("pnl") or 0) > 0]
+        losses = [sample for sample in samples if float(sample.get("pnl") or 0) < 0]
+        capital = float(self.settings.trading_capital_default or 0)
+        simulated_pnl = 0.0
+        trade_rows: list[dict[str, Any]] = []
+        for sample in samples:
+            entry = float(sample.get("entry") or 0)
+            quantity = max(1, int(sample.get("quantity") or 1))
+            unit_pnl = float(sample.get("pnl") or 0)
+            trade_pnl = round(unit_pnl * quantity, 2)
+            simulated_pnl += trade_pnl
+            if sample.get("outcome") in {"missed_profitable_move", "missed_momentum_runner"}:
+                trade_rows.append({
+                    "time": sample.get("time"),
+                    "symbol": sample.get("symbol"),
+                    "side": sample.get("side"),
+                    "strike": sample.get("strike"),
+                    "entry": entry,
+                    "bestMovePoints": sample.get("bestMovePoints"),
+                    "simulatedPnl": trade_pnl,
+                    "strategyType": sample.get("strategyType"),
+                    "momentumSurge": sample.get("momentumSurge"),
+                    "wouldBlockReason": sample.get("wouldBlockReason"),
+                })
+        gross_profit = sum(float(sample.get("pnl") or 0) * max(1, int(sample.get("quantity") or 1)) for sample in wins)
+        gross_loss = abs(sum(float(sample.get("pnl") or 0) * max(1, int(sample.get("quantity") or 1)) for sample in losses))
+        pf = round(gross_profit / gross_loss, 3) if gross_loss else round(gross_profit, 3)
+        win_rate = round((len(wins) / len(samples)) * 100, 2) if samples else 0.0
+        return {
+            "available": bool(samples),
+            "replaySnapshots": len(snapshots),
+            "missedTrades": len(trade_rows),
+            "samples": len(samples),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRatePct": win_rate,
+            "profitFactor": pf,
+            "simulatedNetPnl": round(simulated_pnl, 2),
+            "simulatedNetPnlPct": round(simulated_pnl / capital * 100, 2) if capital > 0 else 0.0,
+            "grossProfit": round(gross_profit, 2),
+            "grossLoss": round(gross_loss, 2),
+            "runnerMissed": sum(1 for row in trade_rows if "RUNNER" in str(row.get("strategyType") or "")),
+            "momentumMissed": sum(1 for row in trade_rows if row.get("momentumSurge")),
+            "topMissed": sorted(trade_rows, key=lambda row: float(row.get("simulatedPnl") or 0), reverse=True)[:15],
+            "horizonTicks": horizon_ticks,
+            "minProfitPoints": min_profit_points,
+        }
+
+    async def backtest_and_train_missed_today(
+        self,
+        target_trades: int = 500,
+        horizon_ticks: int = 60,
+        min_profit_points: float = 8.0,
+        include_losses: bool = True,
+    ) -> dict[str, Any]:
+        backtest = await self.backtest_missed_trades(
+            horizon_ticks=horizon_ticks,
+            min_profit_points=min_profit_points,
+            include_losses=include_losses,
+            target_trades=target_trades,
+        )
+        training = await self.train_replay_opportunities(target_trades, horizon_ticks, min_profit_points, include_losses)
+        calibration = self._learning_calibration()
+        return {
+            **backtest,
+            "training": training,
+            "appliedCalibration": calibration,
+            "effectiveMomentumMinScore": round(self._runner_min_score({"momentumSurge": True, "momentumAligned": True}), 2),
+            "effectiveRunnerMinScore": round(self._runner_min_score({}), 2),
+            "note": "Backtest labels missed replay opportunities; training nudges AI calibration toward momentum/chart-aligned winners.",
+        }
+
     async def train_replay_opportunities(
         self,
         target_trades: int = 500,
@@ -286,21 +374,63 @@ class AutoTraderEngine:
         include_losses: bool = True,
     ) -> dict[str, Any]:
         snapshots = list(self.replay_buffer)
+        samples = self._build_replay_training_samples(
+            snapshots,
+            horizon_ticks=horizon_ticks,
+            min_profit_points=min_profit_points,
+            include_losses=include_losses,
+            target_trades=target_trades,
+        )
+        learning = await self.learner.train_from_historical_samples(samples)
+        wins = [sample for sample in samples if float(sample.get("pnl") or 0) > 0]
+        losses = [sample for sample in samples if float(sample.get("pnl") or 0) < 0]
+        return {
+            "available": bool(samples),
+            "trainingMode": "TODAY_REPLAY_MISSED_OPPORTUNITIES",
+            "targetTrades": target_trades,
+            "samplesAdded": len(samples),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRatePct": round((len(wins) / len(samples)) * 100, 2) if samples else 0.0,
+            "grossProfit": round(sum(float(sample.get("pnl") or 0) for sample in wins), 2),
+            "grossLoss": round(abs(sum(float(sample.get("pnl") or 0) for sample in losses)), 2),
+            "chartAlignedWins": sum(1 for sample in wins if sample.get("chartAligned")),
+            "runnerSamples": sum(1 for sample in samples if "RUNNER" in str(sample.get("strategyType") or "")),
+            "momentumSamples": sum(1 for sample in samples if sample.get("momentumSurge")),
+            "horizonTicks": horizon_ticks,
+            "minProfitPoints": min_profit_points,
+            "learning": learning,
+            "note": "Replay training labels today's candidates by future option premium movement. It trains both missed winners and avoid/wait losers with chart context.",
+        }
+
+    def _build_replay_training_samples(
+        self,
+        snapshots: list[dict[str, Any]],
+        *,
+        horizon_ticks: int,
+        min_profit_points: float,
+        include_losses: bool,
+        target_trades: int,
+    ) -> list[dict[str, Any]]:
         samples: list[dict[str, Any]] = []
         seen: set[str] = set()
         horizon_ticks = max(1, int(horizon_ticks))
         min_profit_points = max(0.5, float(min_profit_points))
         target_trades = max(1, int(target_trades))
+        closed_ids = {trade.id for trade in self.closed_paper}
+        open_ids = set(self.open_paper.keys())
 
         for index, replay_item in enumerate(snapshots):
             payload = replay_item.get("payload") or {}
             timestamp = str(replay_item.get("timestamp") or payload.get("timestamp") or "")
             minute_bucket = timestamp[:16]
-            for candidate in payload.get("executionCandidates") or []:
+            for candidate in self._iter_replay_candidates(payload):
                 candidate_id = str(candidate.get("id") or "")
                 instrument = str(candidate.get("instrumentKey") or "")
-                entry = float(candidate.get("lastPremium") or 0)
+                entry = float(candidate.get("lastPremium") or candidate.get("premium") or 0)
                 if entry <= 0 or not (candidate_id or instrument):
+                    continue
+                if candidate_id in closed_ids or candidate_id in open_ids:
                     continue
                 dedupe_key = f"{candidate_id or instrument}:{minute_bucket}"
                 if dedupe_key in seen:
@@ -320,76 +450,106 @@ class AutoTraderEngine:
                 chart_bias = candidate.get("chartBias")
                 side = candidate.get("side")
                 chart_aligned = chart_bias in {"CALL", "PUT"} and side == chart_bias
-                runner = candidate.get("runnerSignal") or {}
-                runner_score = float(runner.get("score") or 0)
+                runner = candidate.get("runnerSignal") or candidate
+                runner_score = float(runner.get("score") or candidate.get("score") or 0)
                 metrics = runner.get("metrics") or {}
                 breakout = float(metrics.get("breakoutVelocity") or 0)
                 delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
+                premium_velocity = float(metrics.get("premiumVelocity") or 0)
+                momentum_surge = bool(runner.get("momentumSurge") or candidate.get("momentumSurge") or premium_velocity >= float(self.settings.explosive_runner_momentum_premium_velocity_pct))
+                momentum_aligned = bool(runner.get("momentumAligned") or candidate.get("momentumAligned"))
+                strategy_type = str(candidate.get("strategyType") or ("EXPLOSIVE_RUNNER" if "RUNNER" in candidate_id else "REPLAY_CANDIDATE"))
 
                 if mfe >= min_profit_points:
                     pnl = mfe - costs_per_unit
-                    outcome = "missed_profitable_move"
+                    outcome = "missed_momentum_runner" if momentum_surge and momentum_aligned else "missed_profitable_move"
                 elif include_losses:
                     pnl = min(final - entry, mae) - costs_per_unit
                     outcome = "avoid_or_wait"
                 else:
                     continue
 
-                regime = "TREND_EXPANSION" if pnl > 0 and chart_aligned and breakout >= 65 else "REVERSAL_RISK" if pnl < 0 else "RANGE_ABSORPTION"
+                regime = "TREND_EXPANSION" if pnl > 0 and (chart_aligned or momentum_aligned) and breakout >= 55 else "REVERSAL_RISK" if pnl < 0 else "RANGE_ABSORPTION"
+                would_block = []
+                if candidate.get("chopBlocked"):
+                    would_block.append("chop filter")
+                if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias and not momentum_aligned:
+                    would_block.append("chart conflict")
+                if runner_score < float(self.settings.explosive_runner_min_score) and strategy_type == "EXPLOSIVE_RUNNER":
+                    would_block.append("runner score")
+
                 samples.append({
                     "symbol": candidate.get("symbol"),
                     "instrumentKey": instrument,
                     "time": timestamp,
                     "side": side,
+                    "strike": candidate.get("strike"),
                     "entry": round(entry, 2),
                     "pnl": round(pnl, 2),
-                    "tqs": round(float(candidate.get("tqs") or 0)),
+                    "quantity": quantity,
+                    "tqs": round(float(candidate.get("tqs") or runner_score or 0)),
                     "chartBias": chart_bias,
                     "chartTrend": candidate.get("chartTrend"),
                     "chartAligned": chart_aligned,
                     "runnerScore": runner_score,
                     "breakoutVelocity": breakout,
                     "deltaVelocity": delta_velocity,
+                    "premiumVelocity": premium_velocity,
+                    "momentumSurge": momentum_surge,
+                    "momentumAligned": momentum_aligned,
                     "bestMovePoints": round(mfe, 2),
                     "worstMovePoints": round(mae, 2),
                     "regime": regime,
-                    "strategyType": candidate.get("strategyType") or "REPLAY_CANDIDATE",
+                    "strategyType": strategy_type,
                     "outcome": outcome,
+                    "wouldBlockReason": ", ".join(would_block) if would_block else None,
                 })
                 if len(samples) >= target_trades:
                     break
             if len(samples) >= target_trades:
                 break
+        return samples
 
-        learning = await self.learner.train_from_historical_samples(samples)
-        wins = [sample for sample in samples if float(sample.get("pnl") or 0) > 0]
-        losses = [sample for sample in samples if float(sample.get("pnl") or 0) < 0]
-        return {
-            "available": bool(samples),
-            "trainingMode": "TODAY_REPLAY_MISSED_OPPORTUNITIES",
-            "targetTrades": target_trades,
-            "samplesAdded": len(samples),
-            "wins": len(wins),
-            "losses": len(losses),
-            "grossProfit": round(sum(float(sample.get("pnl") or 0) for sample in wins), 2),
-            "grossLoss": round(abs(sum(float(sample.get("pnl") or 0) for sample in losses)), 2),
-            "chartAlignedWins": sum(1 for sample in wins if sample.get("chartAligned")),
-            "runnerSamples": sum(1 for sample in samples if sample.get("strategyType") == "EXPLOSIVE_RUNNER"),
-            "horizonTicks": horizon_ticks,
-            "minProfitPoints": min_profit_points,
-            "learning": learning,
-            "note": "Replay training labels today's candidates by future option premium movement. It trains both missed winners and avoid/wait losers with chart context.",
-        }
+    def _iter_replay_candidates(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for candidate in payload.get("executionCandidates") or []:
+            candidates.append(candidate)
+        nested = payload.get("snapshots") or {}
+        if isinstance(nested, dict):
+            for snapshot in nested.values():
+                if not isinstance(snapshot, dict):
+                    continue
+                for runner in snapshot.get("explosiveRunnerWatchlist") or []:
+                    if not isinstance(runner, dict):
+                        continue
+                    candidates.append({
+                        "id": runner.get("id"),
+                        "symbol": runner.get("symbol") or snapshot.get("symbol"),
+                        "side": runner.get("side"),
+                        "strike": runner.get("strike"),
+                        "expiry": runner.get("expiry"),
+                        "instrumentKey": runner.get("instrumentKey"),
+                        "lastPremium": runner.get("lastPremium") or runner.get("premium"),
+                        "strategyType": "EXPLOSIVE_RUNNER",
+                        "runnerSignal": runner,
+                        "chartBias": (snapshot.get("chartAnalysis") or {}).get("bias"),
+                        "chartTrend": (snapshot.get("chartAnalysis") or {}).get("trend"),
+                        "tqs": runner.get("score"),
+                        "momentumSurge": runner.get("momentumSurge"),
+                        "momentumAligned": runner.get("momentumAligned"),
+                        "score": runner.get("score"),
+                    })
+        return candidates
 
     def _future_candidate_prices(self, snapshots: list[dict[str, Any]], index: int, horizon_ticks: int, candidate_id: str, instrument: str) -> list[float]:
         prices: list[float] = []
         for future in snapshots[index + 1:index + 1 + horizon_ticks]:
             payload = future.get("payload") or {}
-            for candidate in payload.get("executionCandidates") or []:
+            for candidate in self._iter_replay_candidates(payload):
                 same_id = candidate_id and str(candidate.get("id") or "") == candidate_id
                 same_instrument = instrument and str(candidate.get("instrumentKey") or "") == instrument
                 if same_id or same_instrument:
-                    price = float(candidate.get("lastPremium") or 0)
+                    price = float(candidate.get("lastPremium") or candidate.get("premium") or 0)
                     if price > 0:
                         prices.append(price)
                     break
@@ -535,10 +695,22 @@ class AutoTraderEngine:
             return True
         return False
 
+    def _learning_calibration(self) -> dict[str, float]:
+        calibration = (self.learner.status_from_state()).get("calibration") or {}
+        return {
+            "runnerScoreBias": float(calibration.get("runnerScoreBias") or 0),
+            "momentumReward": float(calibration.get("momentumReward") or 0),
+            "chopPenalty": float(calibration.get("chopPenalty") or 0),
+        }
+
     def _runner_min_score(self, runner: dict[str, Any]) -> float:
+        calibration = self._learning_calibration()
+        bias = calibration["runnerScoreBias"] + (calibration["momentumReward"] if runner.get("momentumSurge") else 0)
         if runner.get("momentumSurge") and runner.get("momentumAligned"):
-            return float(self.settings.explosive_runner_momentum_min_score)
-        return float(self.settings.explosive_runner_min_score)
+            base = float(self.settings.explosive_runner_momentum_min_score)
+        else:
+            base = float(self.settings.explosive_runner_min_score)
+        return max(65.0, base - bias)
 
     def _is_tradeable_explosive_runner(self, candidate: dict[str, Any], market_phase: str | None = None) -> bool:
         if not self.settings.explosive_runner_enabled:
@@ -797,13 +969,24 @@ class AutoTraderEngine:
         }
 
     def _compact_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        compact_snapshots: dict[str, Any] = {}
+        for symbol, snapshot in (payload.get("snapshots") or {}).items():
+            if not isinstance(snapshot, dict):
+                continue
+            compact_snapshots[symbol] = {
+                "symbol": snapshot.get("symbol"),
+                "chartAnalysis": snapshot.get("chartAnalysis"),
+                "explosiveRunnerWatchlist": (snapshot.get("explosiveRunnerWatchlist") or [])[:12],
+                "paperPriceWatch": (snapshot.get("paperPriceWatch") or [])[:12],
+            }
         return {
             "type": payload.get("type"),
             "timestamp": payload.get("timestamp"),
             "displaySymbol": payload.get("displaySymbol") or payload.get("symbol"),
             "tradeQualityScore": payload.get("tradeQualityScore"),
             "marketPhase": payload.get("marketPhase"),
-            "executionCandidates": payload.get("executionCandidates", [])[:10],
+            "executionCandidates": payload.get("executionCandidates", [])[:12],
+            "snapshots": compact_snapshots,
         }
 
     def _index_price_payload(self, payload: dict[str, Any], by_id: dict[str, dict[str, Any]], by_instrument: dict[str, dict[str, Any]]) -> None:
