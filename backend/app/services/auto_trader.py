@@ -140,7 +140,7 @@ class AutoTraderEngine:
         trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
         risk_halt = self._paper_risk_halt(trading_capital)
         session_adj = self._paper_session_settings(payload)
-        pre_trade_psychology = self._psychology_report([], [], risk_halt)
+        pre_trade_psychology = self._psychology_report([], [], risk_halt, session_adj)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         cached_snapshot = self._all_snapshots_cached(snapshots)
@@ -184,8 +184,8 @@ class AutoTraderEngine:
         exits = self._update_open_paper(snapshots, pre_trade_psychology, session_adj)
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
-        profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0))
-        psychology = self._psychology_report(candidates, skipped, risk_halt)
+        profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0), session_adj)
+        psychology = self._psychology_report(candidates, skipped, risk_halt, session_adj)
         return {
             "paperTrading": self.settings.paper_trading,
             "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
@@ -394,14 +394,24 @@ class AutoTraderEngine:
                     break
         return prices
 
-    def profit_lock_status(self, capital: float | None = None) -> dict[str, Any]:
+    def profit_lock_status(self, capital: float | None = None, session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
+        session_adj = session_adj or {}
         capital = float(capital or 0)
         report = self.daily_report()
         net = float(report.get("grossProfit", 0)) - float(report.get("grossLoss", 0))
         tiers = [
-            {"name": "fallback", "pct": self.settings.profit_target_fallback_pct},
-            {"name": "secondary", "pct": self.settings.profit_target_secondary_pct},
-            {"name": "primary", "pct": self.settings.profit_target_primary_pct},
+            {
+                "name": "fallback",
+                "pct": float(session_adj.get("profitTargetFallbackPct") or self.settings.profit_target_fallback_pct),
+            },
+            {
+                "name": "secondary",
+                "pct": float(session_adj.get("profitTargetSecondaryPct") or self.settings.profit_target_secondary_pct),
+            },
+            {
+                "name": "primary",
+                "pct": float(session_adj.get("profitTargetPrimaryPct") or self.settings.profit_target_primary_pct),
+            },
         ]
         achieved = []
         for tier in tiers:
@@ -506,6 +516,11 @@ class AutoTraderEngine:
             base_target_points=float(self.settings.paper_target_points),
             base_stop_points=float(self.settings.paper_stop_points),
             base_max_hold_seconds=int(self.settings.max_paper_trade_seconds),
+            open_drive_profit_fallback_pct=float(self.settings.open_drive_profit_target_fallback_pct),
+            open_drive_profit_secondary_pct=float(self.settings.open_drive_profit_target_secondary_pct),
+            open_drive_profit_primary_pct=float(self.settings.open_drive_profit_target_primary_pct),
+            open_drive_profit_stop_pct=float(self.settings.open_drive_profit_stop_pct),
+            open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
         )
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> bool:
@@ -813,7 +828,15 @@ class AutoTraderEngine:
             reason = "psychology cautious stop"
         return round(adjusted_stop, 2), max_hold, reason
 
-    def _psychology_report(self, candidates: list[dict[str, Any]], skipped: list[dict[str, Any]], risk_halt: dict[str, Any]) -> dict[str, Any]:
+    def _psychology_report(
+        self,
+        candidates: list[dict[str, Any]],
+        skipped: list[dict[str, Any]],
+        risk_halt: dict[str, Any],
+        session_adj: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session_adj = session_adj or {}
+        daily_profit_stop_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
         report = self.daily_report()
         closed = list(self.closed_paper)
         open_count = len(self.open_paper)
@@ -843,8 +866,8 @@ class AutoTraderEngine:
             emotional_risks.append("revenge_trading_risk")
             behavioral_findings.append(f"Paper risk halt active: {risk_halt.get('reason')}")
             coach_actions.append("Stop new entries. Review last 3 losses before allowing the system to resume.")
-        if profit_pct >= float(self.settings.paper_daily_profit_stop_pct):
-            behavioral_findings.append(f"Daily paper profit target achieved: {profit_pct:.2f}% >= {self.settings.paper_daily_profit_stop_pct:.2f}%")
+        if profit_pct >= daily_profit_stop_pct:
+            behavioral_findings.append(f"Daily paper profit target achieved: {profit_pct:.2f}% >= {daily_profit_stop_pct:.2f}%")
             coach_actions.append("Stop trading for the day. Protect the achieved profit and avoid greed trades.")
         if consecutive_losses >= 2:
             emotional_risks.append("loss_chasing")
@@ -882,7 +905,7 @@ class AutoTraderEngine:
         discipline_score += 8 if paper_trades == 0 and total_signals > 20 else 0
         discipline_score = max(0, min(100, discipline_score))
 
-        if profit_pct >= float(self.settings.paper_daily_profit_stop_pct):
+        if profit_pct >= daily_profit_stop_pct:
             state = "TARGET_ACHIEVED"
             permission = "BLOCK_NEW_TRADES"
         elif risk_halt.get("blocked"):
@@ -920,7 +943,8 @@ class AutoTraderEngine:
                 "consecutiveLosses": consecutive_losses,
                 "lossPct": round(loss_pct, 2),
                 "profitPct": round(profit_pct, 2),
-                "dailyProfitStopPct": self.settings.paper_daily_profit_stop_pct,
+                "dailyProfitStopPct": daily_profit_stop_pct,
+                "sessionBucket": session_adj.get("sessionBucket"),
                 "currentSkipped": len(skipped),
                 "chartConflicts": chart_conflicts,
                 "chopSkips": chop_skips,

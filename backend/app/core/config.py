@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     profit_target_fallback_pct: float = 6.0
     profit_target_secondary_pct: float = 12.0
     profit_target_primary_pct: float = 18.0
+    open_drive_profit_target_fallback_pct: float = 11.0
+    open_drive_profit_target_secondary_pct: float = 22.0
+    open_drive_profit_target_primary_pct: float = 33.0
+    open_drive_profit_stop_pct: float = 33.0
+    open_drive_allocation_multiplier: float = 1.85
     max_paper_trade_seconds: int = 180
     paper_duplicate_signal_cooldown_seconds: int = 300
     paper_trade_allocation_pct: float = 12.0
