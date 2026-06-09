@@ -569,13 +569,13 @@ class AutoTraderEngine:
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         if premium <= 0:
             reasons.append("missing premium")
+        if candidate.get("chopBlocked"):
+            reasons.append("chop filter blocked")
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
             if candidate.get("effectiveVolume", 0) <= 0 and not volume_state.get("volumeAvailable"):
                 reasons.append("missing effective volume")
         else:
-            if candidate.get("chopBlocked"):
-                reasons.append("chop filter blocked")
             min_entry_tqs = int(session_adj.get("minEntryTqs") or max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)))
             if candidate.get("tqs", 0) < min_entry_tqs:
                 reasons.append(f"TQS below session threshold ({min_entry_tqs})")
@@ -718,7 +718,7 @@ class AutoTraderEngine:
                 reason = psych_exit_reason or "momentum decay or delta reversal stop"
             elif age >= max_hold_seconds:
                 reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
-            elif (candidate or {}).get("chopBlocked"):
+            elif self._should_chop_exit(trade, candidate, age):
                 reason = "liquidity rejection / chop filter exit"
             if reason:
                 trade.status = "EXITED"
@@ -794,7 +794,19 @@ class AutoTraderEngine:
         if item_id:
             by_id[str(item_id)] = payload
         if instrument:
-            by_instrument[str(instrument)] = payload
+            instrument_key = str(instrument)
+            existing = by_instrument.get(instrument_key)
+            if existing and existing.get("chopBlocked") and not payload.get("chopBlocked"):
+                payload = {**payload, "chopBlocked": False}
+            by_instrument[instrument_key] = payload
+
+    def _should_chop_exit(self, trade: PaperTrade, candidate: dict[str, Any] | None, age_seconds: float) -> bool:
+        if not candidate or not candidate.get("chopBlocked"):
+            return False
+        if trade.strategy_type == "EXPLOSIVE_RUNNER":
+            return False
+        min_hold = max(0, int(self.settings.paper_min_hold_before_chop_exit_seconds))
+        return age_seconds >= min_hold
 
     def _available_capital(self, trading_capital: float) -> float:
         used = sum(max(0.0, trade.entry_price) * max(0, trade.quantity) for trade in self.open_paper.values())
