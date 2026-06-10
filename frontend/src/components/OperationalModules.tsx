@@ -561,7 +561,9 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const paperSessions = auto.paperSessions;
   const dayAggregate = paperSessions?.dayAggregate ?? dailyReport.dayAggregate;
   const currentSession = paperSessions?.currentSession;
-  const completedSessions = paperSessions?.completedSessionsToday ?? [];
+  const completedSessions = (paperSessions?.completedSessionsToday ?? []).filter(
+    (session, index, items) => items.findIndex((item) => item.id === session.id) === index,
+  );
   const openPnl = openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
   const closedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
 

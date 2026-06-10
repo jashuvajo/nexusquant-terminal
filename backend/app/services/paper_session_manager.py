@@ -29,6 +29,7 @@ class PaperSessionManager:
     _current: dict[str, Any] | None = None
     _completed: deque[dict[str, Any]] = deque(maxlen=2_000)
     _day_totals: dict[str, float] = {"grossProfit": 0.0, "grossLoss": 0.0, "netPnl": 0.0}
+    _file_loaded: bool = False
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -42,9 +43,22 @@ class PaperSessionManager:
     def current(self) -> dict[str, Any]:
         return dict(self._current or {})
 
+    def _dedupe_sessions(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for session in sessions:
+            session_id = str(session.get("id") or session.get("sessionId") or "")
+            if session_id and session_id in seen:
+                continue
+            if session_id:
+                seen.add(session_id)
+            unique.append(session)
+        return unique
+
     def completed_today(self) -> list[dict[str, Any]]:
         day = _utc_day()
-        return [session for session in list(self._completed) if str(session.get("tradingDay") or "") == day]
+        today = [session for session in list(self._completed) if str(session.get("tradingDay") or "") == day]
+        return self._dedupe_sessions(today)
 
     def day_aggregate(self) -> dict[str, Any]:
         sessions = self.completed_today()
@@ -93,7 +107,9 @@ class PaperSessionManager:
             "status": "COMPLETED",
             **(extra or {}),
         }
-        self._completed.append(closed)
+        existing_ids = {str(session.get("id") or "") for session in self._completed}
+        if str(closed.get("id") or "") not in existing_ids:
+            self._completed.append(closed)
         self._append_file(closed)
         self._current = None
         return closed
@@ -179,6 +195,17 @@ class PaperSessionManager:
         try:
             path = Path(path_value)
             path.parent.mkdir(parents=True, exist_ok=True)
+            session_id = str(session.get("id") or "")
+            if path.exists() and session_id:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        existing = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(existing, dict) and str(existing.get("id") or "") == session_id:
+                        return
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(session, separators=(",", ":")) + "\n")
             limit = max(100, int(self.settings.paper_sessions_persist_limit))
@@ -190,24 +217,36 @@ class PaperSessionManager:
             return
 
     def _load_file(self) -> None:
+        if PaperSessionManager._file_loaded:
+            return
         path_value = self.settings.paper_sessions_file
         if not path_value:
+            PaperSessionManager._file_loaded = True
             return
         path = Path(path_value)
         if not path.exists():
+            PaperSessionManager._file_loaded = True
             return
         try:
+            seen_ids = {str(session.get("id") or "") for session in self._completed}
             for line in path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
                     continue
                 item = json.loads(line)
-                if isinstance(item, dict):
-                    self._completed.append(item)
+                if not isinstance(item, dict):
+                    continue
+                session_id = str(item.get("id") or "")
+                if session_id and session_id in seen_ids:
+                    continue
+                self._completed.append(item)
+                if session_id:
+                    seen_ids.add(session_id)
         except Exception:
             return
+        PaperSessionManager._file_loaded = True
 
     def list_sessions(self, limit: int = 50) -> dict[str, Any]:
-        items = list(self._completed)[-limit:]
+        items = self._dedupe_sessions(list(self._completed))[-limit:]
         return {
             "count": len(items),
             "sessions": items,
