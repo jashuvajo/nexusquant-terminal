@@ -1231,16 +1231,22 @@ class AutoTraderEngine:
         session_net = float(session_report.get("netPnl") or 0)
         day_net = float(day_aggregate.get("netPnl") or 0)
         consecutive_losses = int(session_report.get("consecutiveLosses") or 0)
-        loss_pct = abs(day_net) / capital * 100 if capital > 0 and day_net < 0 else 0.0
+        day_loss_pct = abs(day_net) / capital * 100 if capital > 0 and day_net < 0 else 0.0
         session_loss_pct = abs(session_net) / capital * 100 if capital > 0 and session_net < 0 else 0.0
-        reasons = []
         day_loss_amount = abs(day_net) if day_net < 0 else 0.0
+        session_loss_amount = abs(session_net) if session_net < 0 else 0.0
+        reasons = []
         max_loss_amount = float(self.settings.paper_max_daily_loss_amount or 0)
+        max_loss_pct = float(self.settings.paper_max_daily_loss_pct)
         rotation_enabled = bool(self.settings.paper_session_rotation_enabled)
-        if max_loss_amount > 0 and day_loss_amount >= max_loss_amount:
-            reasons.append(f"paper daily loss ₹{day_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
-        elif loss_pct >= float(self.settings.paper_max_daily_loss_pct):
-            reasons.append(f"paper daily loss {loss_pct:.2f}% >= {self.settings.paper_max_daily_loss_pct:.2f}%")
+        active_loss_amount = session_loss_amount if rotation_enabled else day_loss_amount
+        active_loss_pct = session_loss_pct if rotation_enabled else day_loss_pct
+        if max_loss_amount > 0 and active_loss_amount >= max_loss_amount:
+            scope = "session" if rotation_enabled else "daily"
+            reasons.append(f"paper {scope} loss ₹{active_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
+        elif active_loss_pct >= max_loss_pct:
+            scope = "session" if rotation_enabled else "daily"
+            reasons.append(f"paper {scope} loss {active_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
         if not rotation_enabled and consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
@@ -1252,16 +1258,20 @@ class AutoTraderEngine:
             "reason": "; ".join(reasons) if reasons else None,
             "netPnl": round(session_net, 2),
             "dayNetPnl": round(day_net, 2),
-            "lossPct": round(loss_pct, 2),
+            "lossPct": round(active_loss_pct, 2),
+            "dayLossPct": round(day_loss_pct, 2),
             "sessionLossPct": round(session_loss_pct, 2),
-            "lossAmount": round(day_loss_amount, 2),
+            "lossAmount": round(active_loss_amount, 2),
+            "dayLossAmount": round(day_loss_amount, 2),
+            "sessionLossAmount": round(session_loss_amount, 2),
             "consecutiveLosses": consecutive_losses,
             "sessionProfitPct": round(session_profit_pct, 2),
             "profitTargetPct": profit_target_pct,
-            "maxDailyLossPct": self.settings.paper_max_daily_loss_pct,
+            "maxDailyLossPct": max_loss_pct,
             "maxDailyLossAmount": max_loss_amount,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
             "sessionRotationEnabled": rotation_enabled,
+            "riskScope": "session" if rotation_enabled else "day",
         }
 
     def _psychology_exit_adjustments(self, stop_points: float, psychology: dict[str, Any] | None = None, session_max_hold: int | None = None) -> tuple[float, int, str | None]:
@@ -1312,7 +1322,7 @@ class AutoTraderEngine:
         chop_skips = sum(1 for reason in skipped_reasons if "chop" in reason.lower())
         duplicate_skips = sum(1 for reason in skipped_reasons if "duplicate" in reason.lower() or "cached" in reason.lower())
         consecutive_losses = int(risk_halt.get("consecutiveLosses") or 0)
-        loss_pct = float(risk_halt.get("lossPct") or 0)
+        loss_pct = float(risk_halt.get("sessionLossPct") if rotation_enabled else risk_halt.get("lossPct") or 0)
         recent_losses = [trade for trade in closed[-5:] if trade.pnl < 0]
         recent_wins = [trade for trade in closed[-5:] if trade.pnl > 0]
 

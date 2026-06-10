@@ -141,16 +141,6 @@ class PaperSessionManager:
         loss_amount = abs(net) if net < 0 else 0.0
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
         max_loss_amount = float(self.settings.paper_max_daily_loss_amount or 0)
-        day_agg = self.day_aggregate()
-        day_net = float(day_agg.get("netPnl") or 0)
-        day_loss = abs(day_net) if day_net < 0 else 0.0
-
-        if max_loss_amount > 0 and day_loss >= max_loss_amount:
-            return {
-                "shouldRotate": False,
-                "dailyHalt": True,
-                "reason": f"daily paper loss ₹{day_loss:,.0f} >= ₹{max_loss_amount:,.0f}",
-            }
         if consecutive >= int(self.settings.paper_max_consecutive_losses):
             return {
                 "shouldRotate": True,
