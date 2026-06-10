@@ -895,7 +895,9 @@ class AutoTraderEngine:
             "bestObservedSide": best_side,
             "timeWindowSettings": {
                 "OPEN_DRIVE": {
+                    "windowIst": "09:15-10:30",
                     "profile": "safe_beginner",
+                    "permission": "A_PLUS_ONLY",
                     "allocationPctMultiplier": 0.45,
                     "minEntryTqs": 88,
                     "minRunnerScore": 92,
@@ -903,7 +905,9 @@ class AutoTraderEngine:
                     "note": "Today open-drive overtraded and lost heavily; trade only A+ direction-aligned runners.",
                 },
                 "MIDDAY_CHOP": {
+                    "windowIst": "11:30-13:30",
                     "profile": "safe_beginner",
+                    "permission": "NO_NORMAL_TRADES",
                     "allocationPctMultiplier": 0.0,
                     "minEntryTqs": 90,
                     "minRunnerScore": 94,
@@ -911,7 +915,9 @@ class AutoTraderEngine:
                     "note": "Pause normal entries; allow only exceptional runners if future code enables bypass.",
                 },
                 "NORMAL": {
+                    "windowIst": "10:30-11:30 and 13:30-14:30",
                     "profile": "balanced_pro",
+                    "permission": "SELECTIVE",
                     "allocationPctMultiplier": 0.6,
                     "minEntryTqs": 84,
                     "minRunnerScore": 90,
@@ -919,13 +925,23 @@ class AutoTraderEngine:
                     "note": "Normal window was below breakeven today; reduce frequency and wait for side confirmation.",
                 },
                 "CLOSING_MOMENTUM": {
+                    "windowIst": "14:30-15:15",
                     "profile": "realistic_aggressive",
+                    "permission": "AGGRESSIVE_IF_ELITE_RUNNER",
                     "allocationPctMultiplier": 1.0,
                     "minEntryTqs": 82,
                     "minRunnerScore": 86,
                     "maxHoldSeconds": 240,
                     "note": "Best observed window today; allow aggressive paper runners only while daily risk/target guard is clear.",
                 },
+            },
+            "bestTiming": {
+                "primaryWindowIst": "14:30-15:15",
+                "primaryBucket": "CLOSING_MOMENTUM",
+                "primaryProfile": "realistic_aggressive",
+                "primarySetup": "Elite SENSEX PUT explosive runner",
+                "avoidWindowsIst": ["11:30-13:30 unless elite runner", "opening drive until paper data improves"],
+                "rule": "Be aggressive only in the best observed window and only when runner is elite; otherwise protect capital.",
             },
         }
 

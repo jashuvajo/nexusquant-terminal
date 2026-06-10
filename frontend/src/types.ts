@@ -597,13 +597,23 @@ export interface PaperPerformanceAnalysis {
     bestObservedSymbol?: string | null;
     bestObservedSide?: string | null;
     timeWindowSettings: Record<string, {
+      windowIst?: string;
       profile: string;
+      permission?: string;
       allocationPctMultiplier: number;
       minEntryTqs: number;
       minRunnerScore: number;
       maxHoldSeconds: number;
       note: string;
     }>;
+    bestTiming?: {
+      primaryWindowIst: string;
+      primaryBucket: string;
+      primaryProfile: string;
+      primarySetup: string;
+      avoidWindowsIst: string[];
+      rule: string;
+    };
   };
   rulesApplied: string[];
 }

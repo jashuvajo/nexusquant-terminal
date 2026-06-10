@@ -612,6 +612,14 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
             <MetricCard label="Best Symbol / Side" value={`${performance.bestObserved.symbol ?? 'n/a'} ${performance.bestObserved.side ?? ''}`} helper="From today's paper trades" tone="violet" />
             <MetricCard label="Base Profile" value={profilePlan.recommendedBaseProfile.replaceAll('_', ' ')} helper="Dynamic by time window" tone="amber" />
           </div>
+          {profilePlan.bestTiming && (
+            <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4 text-sm text-emerald-100">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-200">Best timing profile</p>
+              <p className="mt-2 font-semibold">{profilePlan.bestTiming.primaryWindowIst} IST | {profilePlan.bestTiming.primaryProfile.replaceAll('_', ' ')} | {profilePlan.bestTiming.primarySetup}</p>
+              <p className="mt-1 text-xs text-emerald-100/80">{profilePlan.bestTiming.rule}</p>
+              <p className="mt-1 text-xs text-amber-100/80">Avoid: {profilePlan.bestTiming.avoidWindowsIst.join(', ')}</p>
+            </div>
+          )}
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             {Object.entries(profilePlan.timeWindowSettings).map(([bucket, plan]) => (
               <div key={bucket} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4 text-sm text-slate-300">
@@ -620,6 +628,8 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
                   <span className="text-cyan-200">{plan.profile.replaceAll('_', ' ')}</span>
                 </div>
                 <div className="mt-2 grid gap-2 text-xs sm:grid-cols-4">
+                  <span>{plan.windowIst ?? 'Timing n/a'} IST</span>
+                  <span>{plan.permission?.replaceAll('_', ' ') ?? 'Selective'}</span>
                   <span>Alloc x{plan.allocationPctMultiplier}</span>
                   <span>TQS {plan.minEntryTqs}</span>
                   <span>Runner {plan.minRunnerScore}</span>
