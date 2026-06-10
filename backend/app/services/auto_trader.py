@@ -1278,12 +1278,15 @@ class AutoTraderEngine:
         rotation_enabled = bool(self.settings.paper_session_rotation_enabled)
         active_loss_amount = session_loss_amount if rotation_enabled else day_loss_amount
         active_loss_pct = session_loss_pct if rotation_enabled else day_loss_pct
-        if max_loss_amount > 0 and active_loss_amount >= max_loss_amount:
-            scope = "session" if rotation_enabled else "daily"
-            reasons.append(f"paper {scope} loss ₹{active_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
-        elif active_loss_pct >= max_loss_pct:
-            scope = "session" if rotation_enabled else "daily"
-            reasons.append(f"paper {scope} loss {active_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
+        if max_loss_amount > 0 and day_loss_amount >= max_loss_amount:
+            reasons.append(f"paper daily loss ₹{day_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
+        elif day_loss_pct >= max_loss_pct:
+            reasons.append(f"paper daily loss {day_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
+        if rotation_enabled:
+            if max_loss_amount > 0 and session_loss_amount >= max_loss_amount:
+                reasons.append(f"paper session loss ₹{session_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
+            elif session_loss_pct >= max_loss_pct:
+                reasons.append(f"paper session loss {session_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
         if not rotation_enabled and consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
