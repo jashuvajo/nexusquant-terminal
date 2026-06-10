@@ -1080,6 +1080,10 @@ class RealTimeMarketEngine:
                     chart_bias=(chart_analysis or {}).get("bias"),
                     option_direction=(option_bias or {}).get("direction"),
                     momentum_premium_velocity_pct=float(self.settings.explosive_runner_momentum_premium_velocity_pct),
+                    elite_min_score=float(self.settings.explosive_runner_elite_min_score),
+                    elite_breakout_min=float(self.settings.explosive_runner_elite_breakout_min),
+                    elite_delta_velocity_min=float(self.settings.explosive_runner_elite_delta_velocity_min),
+                    elite_spread_min=float(self.settings.explosive_runner_elite_spread_min),
                 )
                 signal["id"] = f"{symbol}-{expiry}-{strike}-{side}-RUNNER"
                 signal["lastPremium"] = premium
@@ -1203,8 +1207,10 @@ class RealTimeMarketEngine:
             if len(trades) >= limit:
                 break
             momentum_surge = bool(signal.get("momentumSurge")) and bool(signal.get("momentumAligned"))
-            min_score = float(self.settings.explosive_runner_momentum_min_score if momentum_surge else self.settings.explosive_runner_min_score)
+            min_score = float(self.settings.explosive_runner_elite_min_score if momentum_surge else self.settings.explosive_runner_min_score)
             if (not signal.get("candidate") and not momentum_surge) or as_float(signal.get("score")) < min_score:
+                continue
+            if signal.get("confidence") != "HIGH" or not signal.get("eliteRunner"):
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
@@ -1239,7 +1245,14 @@ class RealTimeMarketEngine:
                     "volumeSource": volume_state.get("source"),
                     "effectiveVolume": volume_state.get("effectiveVolume", 0),
                     "entryModel": {"model": "explosive_runner_scan", "state": signal.get("watchMode"), "retestConfirmed": False, "failedBreakout": False},
-                    "optimizedProfile": {**optimized_profile, "executionStyle": "RUNNER_BREAKOUT", "runnerPct": signal.get("runnerPct", optimized_profile.get("runnerPct", 0.65))},
+                    "optimizedProfile": {
+                        **optimized_profile,
+                        "executionStyle": "RUNNER_BREAKOUT",
+                        "runnerPct": signal.get("runnerPct", optimized_profile.get("runnerPct", 0.65)),
+                        "targetPremiumPct": (signal.get("maxPointsPlan") or {}).get("targetPremiumPct"),
+                        "trailPct": (signal.get("maxPointsPlan") or {}).get("trailPct"),
+                        "holdBias": "maximize_points_with_trailing_lock",
+                    },
                     "strategyType": "EXPLOSIVE_RUNNER",
                     "runnerSignal": signal,
                     "tqs": max(68, round(as_float(signal.get("score")))),
@@ -1258,6 +1271,7 @@ class RealTimeMarketEngine:
                         f"Premium must stay inside {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f} for 100000 capital backtest sizing",
                         "Monitor every configured second from backend background loop and UI polling",
                         "Require premium expansion, spread quality, volume/OI and delta velocity to remain supportive",
+                        "Elite runner only: HIGH confidence, chart-aligned, max-points trailing plan",
                     ],
                     "levels": {},
                     "invalidations": [

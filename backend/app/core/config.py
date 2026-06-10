@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     explosive_runner_min_score: float = 85.0
     explosive_runner_momentum_min_score: float = 72.0
     explosive_runner_momentum_premium_velocity_pct: float = 5.0
+    explosive_runner_elite_min_score: float = 92.0
+    explosive_runner_elite_breakout_min: float = 70.0
+    explosive_runner_elite_delta_velocity_min: float = 55.0
+    explosive_runner_elite_spread_min: float = 78.0
     explosive_runner_premium_min: float = 25.0
     explosive_runner_premium_max: float = 250.0
     background_market_monitor_enabled: bool = True
@@ -111,6 +115,11 @@ class Settings(BaseSettings):
     paper_min_premium_ltp: float = 150.0
     paper_high_confidence_min_runner_score: float = 90.0
     paper_high_confidence_min_tqs: int = 86
+    paper_runner_target_premium_pct: float = 28.0
+    paper_runner_max_target_premium_pct: float = 45.0
+    paper_runner_trail_retain_pct: float = 45.0
+    paper_runner_min_hold_seconds: int = 90
+    paper_runner_max_hold_seconds: int = 420
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False

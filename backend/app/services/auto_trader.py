@@ -1282,6 +1282,8 @@ class AutoTraderEngine:
             confidence = str(runner.get("confidence") or "").upper()
             if confidence != "HIGH":
                 return False, f"runner confidence {confidence or 'LOW'}; HIGH confidence only"
+            if not runner.get("eliteRunner"):
+                return False, "explosive runner is not elite quality"
             score = float(runner.get("score") or candidate.get("tqs") or 0)
             min_score = float(self.settings.paper_high_confidence_min_runner_score)
             if score < min_score:
@@ -1350,7 +1352,11 @@ class AutoTraderEngine:
         if runner.get("candidate") is False and not momentum_runner:
             return False
         score = float(runner.get("score") or candidate.get("tqs") or 0)
-        if score < self._runner_min_score(runner):
+        if not runner.get("eliteRunner"):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        if score < max(self._runner_min_score(runner), float(self.settings.explosive_runner_elite_min_score), float(self.settings.paper_high_confidence_min_runner_score)):
             return False
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         if premium <= 0:
@@ -1553,8 +1559,11 @@ class AutoTraderEngine:
             breakeven_shift = float(trade.breakeven_shift_points or self.settings.paper_breakeven_shift_points)
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology, session_max_hold)
             style = str(profile.get("executionStyle") or "GENERIC")
+            is_runner = trade.strategy_type == "EXPLOSIVE_RUNNER"
             if style == "RUNNER_BREAKOUT":
-                target_points = max(target_points, self.settings.paper_target_points * 1.2)
+                target_points = max(target_points, self.settings.paper_target_points * 1.5)
+                max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
+                breakeven_shift = max(breakeven_shift, target_points * 0.45)
             elif style == "HIGH_WIN_SCALP":
                 target_points = max(target_points, self.settings.paper_target_points)
             if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
@@ -1563,9 +1572,14 @@ class AutoTraderEngine:
             if not trade.partial_exit_taken and trade.best_price >= trade.entry_price + partial_exit_at:
                 trade.partial_exit_taken = True
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
-            if current >= trade.entry_price + target_points:
+            runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
+            if is_runner and trade.best_price >= trade.entry_price + target_points and current <= trade.best_price - float(trade.trail_points or target_points * 0.45):
+                reason = "elite runner trailing max-points lock"
+            elif is_runner and age >= max_hold_seconds and trade.best_price > trade.entry_price:
+                reason = "elite runner max hold profit lock"
+            elif not is_runner and current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
-            elif trade.breakeven_armed and current <= trade.entry_price:
+            elif trade.breakeven_armed and current <= trade.entry_price and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
                 reason = psych_exit_reason or "momentum decay or delta reversal stop"
@@ -2076,11 +2090,23 @@ class AutoTraderEngine:
         delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
         costs_per_unit = float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0)
         # Low-premium options can lose too much if we use a fixed 7/10 point stop.
+        is_runner = candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+        if is_runner:
+            plan = runner.get("maxPointsPlan") or {}
+            target_pct = float(plan.get("targetPremiumPct") or profile.get("targetPremiumPct") or self.settings.paper_runner_target_premium_pct)
+            max_target_pct = float(self.settings.paper_runner_max_target_premium_pct)
+            target = max(target, premium * min(max_target_pct, max(target_pct, self.settings.paper_runner_target_premium_pct)) / 100, self.settings.paper_target_points * 1.5)
+            base_stop = max(base_stop, premium * float(plan.get("hardStopPct") or 10.0) / 100)
         premium_stop_cap_pct = 0.10 if runner_score >= 85 and breakout >= 65 and delta_velocity >= 45 else 0.08
         premium_capped_stop = max(costs_per_unit + 1.0, premium * premium_stop_cap_pct) if premium > 0 else base_stop
-        stop = min(base_stop, premium_capped_stop) if premium > 0 else base_stop
+        stop = min(base_stop, premium_capped_stop) if premium > 0 and not is_runner else base_stop
         stop = max(costs_per_unit + 0.75, stop)
-        trail = max(1.5, target * (0.45 if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" else 0.35))
+        if is_runner:
+            plan = runner.get("maxPointsPlan") or {}
+            trail_pct = float(plan.get("trailPct") or self.settings.paper_runner_trail_retain_pct)
+            trail = max(2.0, target * 0.45, premium * trail_pct / 100)
+        else:
+            trail = max(1.5, target * 0.35)
         return {
             "targetPoints": round(target, 2),
             "stopPoints": round(stop, 2),
