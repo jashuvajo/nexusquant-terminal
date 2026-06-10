@@ -1728,6 +1728,8 @@ class AutoTraderEngine:
         discipline_score -= 10 if open_count > 2 else 0
         discipline_score += 8 if duplicate_skips else 0
         discipline_score += 8 if paper_trades == 0 and total_signals > 20 else 0
+        if risk_halt.get("blocked"):
+            discipline_score = min(discipline_score, 45)
         discipline_score = max(0, min(100, discipline_score))
 
         if profit_pct >= daily_profit_stop_pct and not rotation_enabled:
