@@ -226,7 +226,16 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
     for symbol, snapshot in snapshots.items():
         for trade in snapshot.get("suggestedTrades") or []:
             candidates.append({"symbol": symbol, **trade})
-    payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
+    market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
+    try:
+        settings = get_settings()
+        instruments = settings.market_snapshot_instrument_list
+        if instruments:
+            quote_payload = await get_upstox(settings, get_upstox_auth(settings)).full_market_quote(instruments)
+            market_snapshot = {"available": True, **summarize_market_movers(instruments, quote_payload)}
+    except Exception as exc:
+        market_snapshot = {"available": False, "reason": str(exc)}
+    payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates, "marketSnapshot": market_snapshot}
     session_state = current_session_state()
     if session_state.phase == "LIVE_MARKET":
         payload["autoTrader"] = await auto_engine.process(payload)

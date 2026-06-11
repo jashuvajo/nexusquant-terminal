@@ -176,6 +176,7 @@ class AutoTraderEngine:
         self.open_paper = AutoTraderEngine._shared_open_paper
         self.closed_paper = AutoTraderEngine._shared_closed_paper
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
+        self._latest_market_snapshot: dict[str, Any] = {}
         self._load_replay_file()
         self._load_paper_trades_file()
 
@@ -190,6 +191,7 @@ class AutoTraderEngine:
         session_adj = self._paper_session_settings(payload)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
+        self._latest_market_snapshot = payload.get("marketSnapshot") or {}
         cached_snapshot = self._all_snapshots_cached(snapshots)
         signal_cooldown_seconds = int(session_adj.get("duplicateCooldownSeconds") or self.settings.paper_duplicate_signal_cooldown_seconds)
         market_phase = str(payload.get("marketPhase") or MarketPhase.LIVE_MARKET.value)
@@ -1409,6 +1411,37 @@ class AutoTraderEngine:
             return f"{side} side underperforming today; best observed side is {best_side} with PF {best_pf:.2f}"
         return None
 
+    def _breadth_confirmation(self, side: str) -> dict[str, Any]:
+        snapshot = self._latest_market_snapshot or {}
+        breadth = snapshot.get("breadth") or {}
+        count = int(snapshot.get("count") or 0)
+        score = float(breadth.get("score") or 50.0)
+        bias = str(breadth.get("bias") or "NEUTRAL")
+        enabled = bool(self.settings.paper_breadth_filter_enabled)
+        enough_data = count >= int(self.settings.paper_breadth_min_count)
+        side = str(side or "").upper()
+        aligned = True
+        reason = "market breadth neutral or unavailable"
+        if enabled and enough_data:
+            bullish = score >= float(self.settings.paper_breadth_bullish_threshold)
+            bearish = score <= float(self.settings.paper_breadth_bearish_threshold)
+            if side == "CALL":
+                aligned = not bearish
+                reason = "CALL aligned with market breadth" if aligned else f"CALL rejected: breadth bearish ({score:.1f})"
+            elif side == "PUT":
+                aligned = not bullish
+                reason = "PUT aligned with market breadth" if aligned else f"PUT rejected: breadth bullish ({score:.1f})"
+        return {
+            "available": bool(snapshot.get("available")) and enough_data,
+            "enabled": enabled,
+            "aligned": aligned,
+            "score": round(score, 2),
+            "bias": bias,
+            "count": count,
+            "reason": reason,
+            "source": snapshot.get("source") or "market_snapshot_cache",
+        }
+
     def _ai_trade_quality_prediction(
         self,
         candidate: dict[str, Any],
@@ -1432,6 +1465,7 @@ class AutoTraderEngine:
         effective_volume = float(candidate.get("effectiveVolume") or volume_state.get("effectiveVolume") or metrics.get("volume") or 0)
         session_bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
         is_runner = candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+        breadth = self._breadth_confirmation(side)
 
         score = 45.0
         score += max(0.0, min(18.0, (tqs - 70) * 0.6))
@@ -1450,6 +1484,8 @@ class AutoTraderEngine:
             score -= 15.0
         if candidate.get("chopBlocked") and not is_runner:
             score -= 18.0
+        if breadth.get("available"):
+            score += 10.0 if breadth.get("aligned") else -18.0
 
         expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
         if is_runner:
@@ -1476,6 +1512,7 @@ class AutoTraderEngine:
                 "confidencePct": self.settings.paper_ai_min_confidence_pct,
             },
             "sessionBucket": session_bucket,
+            "breadth": breadth,
             "model": "heuristic_trade_quality_predictor_v1",
         }
 
@@ -1502,6 +1539,9 @@ class AutoTraderEngine:
         side_gate = self._side_performance_gate(candidate)
         if side_gate:
             reasons.append(side_gate)
+        breadth = self._breadth_confirmation(side)
+        if breadth.get("available") and not breadth.get("aligned"):
+            reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok:
             reasons.append(high_conf_reason)

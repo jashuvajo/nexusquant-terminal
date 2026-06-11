@@ -565,6 +565,7 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const dayAggregate = paperSessions?.dayAggregate ?? dailyReport.dayAggregate;
   const currentSession = paperSessions?.currentSession;
   const completedSessions = paperSessions?.completedSessionsToday ?? [];
+  const breadth = snapshot.marketSnapshot?.breadth;
   const openPnl = openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
   const recentClosedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
   const dayNetPnl = dailyReport.netPnl ?? dayAggregate?.netPnl ?? 0;
@@ -584,6 +585,9 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
           <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
           <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
+          {breadth && (
+            <MetricCard label="Market Breadth" value={`${breadth.bias} ${breadth.score}`} helper={`${breadth.advancing} advancing / ${breadth.declining} declining`} tone={breadth.bias === 'BULLISH' ? 'emerald' : breadth.bias === 'BEARISH' ? 'rose' : 'amber'} />
+          )}
           {targetLock?.enabled && (
             <MetricCard label="Daily Target Lock" value={targetLock.locked || targetLock.projectedLocked ? 'LOCKED' : formatCurrency(targetLock.remainingToTarget)} helper={`${targetLock.dayQuality ?? 'DAY'} ${targetLock.targetPct ?? ''}% | Projected ${formatCurrency(targetLock.projectedNetPnl)}`} tone={targetLock.locked || targetLock.projectedLocked ? 'emerald' : 'amber'} />
           )}

@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     paper_ai_min_win_probability_pct: float = 65.0
     paper_ai_min_risk_reward: float = 2.0
     paper_ai_min_confidence_pct: float = 75.0
+    paper_breadth_filter_enabled: bool = True
+    paper_breadth_min_count: int = 2
+    paper_breadth_bullish_threshold: float = 60.0
+    paper_breadth_bearish_threshold: float = 40.0
     paper_daily_profit_target_amount: float = 50000.0
     paper_daily_profit_target_worst_pct: float = 5.0
     paper_daily_profit_target_medium_pct: float = 8.0
