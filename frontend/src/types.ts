@@ -420,7 +420,7 @@ export interface AutoTraderState {
   liveTradingEnabled: boolean;
   autoTradingStopped: boolean;
   signalsThisTick: number;
-  skippedSignals: Array<{ candidate?: string; reason: string; quality?: Record<string, unknown> }>;
+  skippedSignals: Array<{ candidate?: string; reason: string; quality?: Record<string, unknown> & { aiPrediction?: Record<string, unknown> } }>;
   openPaperTrades: PaperTrade[];
   closedPaperTrades: PaperTrade[];
   orderLifecycle: PaperLifecycleEvent[];

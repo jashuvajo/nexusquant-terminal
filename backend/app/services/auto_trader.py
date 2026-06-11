@@ -1409,6 +1409,76 @@ class AutoTraderEngine:
             return f"{side} side underperforming today; best observed side is {best_side} with PF {best_pf:.2f}"
         return None
 
+    def _ai_trade_quality_prediction(
+        self,
+        candidate: dict[str, Any],
+        *,
+        premium: float,
+        required_move: float,
+        session_adj: dict[str, Any],
+        market_phase: str | None,
+    ) -> dict[str, Any]:
+        runner = candidate.get("runnerSignal") or {}
+        metrics = runner.get("metrics") or {}
+        side = str(candidate.get("side") or "")
+        chart_bias = str(candidate.get("chartBias") or "")
+        tqs = float(candidate.get("tqs") or runner.get("score") or 0)
+        runner_score = float(runner.get("score") or 0)
+        spread_quality = float(metrics.get("spreadQuality") or 0)
+        breakout = float(metrics.get("breakoutVelocity") or 0)
+        delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
+        premium_velocity = float(metrics.get("premiumVelocity") or 0)
+        volume_state = runner.get("volumeState") or {}
+        effective_volume = float(candidate.get("effectiveVolume") or volume_state.get("effectiveVolume") or metrics.get("volume") or 0)
+        session_bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        is_runner = candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+
+        score = 45.0
+        score += max(0.0, min(18.0, (tqs - 70) * 0.6))
+        score += max(0.0, min(20.0, (runner_score - 80) * 0.8))
+        score += 14.0 if runner.get("eliteRunner") else 0.0
+        score += 8.0 if runner.get("momentumAligned") else -8.0 if is_runner else 0.0
+        score += 8.0 if spread_quality >= 80 else -10.0 if spread_quality and spread_quality < 70 else 0.0
+        score += 7.0 if breakout >= 70 else 0.0
+        score += 7.0 if delta_velocity >= 55 else 0.0
+        score += 5.0 if premium_velocity >= float(self.settings.explosive_runner_momentum_premium_velocity_pct) else 0.0
+        score += 5.0 if effective_volume > 0 else -8.0
+        score += 6.0 if session_bucket == "CLOSING_MOMENTUM" else -7.0 if session_bucket == "MIDDAY_CHOP" else 0.0
+        if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
+            score += 8.0 if chart_bias == side else -25.0
+        elif chart_bias == "WAIT":
+            score -= 15.0
+        if candidate.get("chopBlocked") and not is_runner:
+            score -= 18.0
+
+        expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
+        if is_runner:
+            expected_move = max(expected_move, float(self.settings.paper_runner_target_premium_pct) * premium / 100)
+        expected_drawdown = max(required_move, float(self.settings.paper_stop_points))
+        risk_reward = expected_move / expected_drawdown if expected_drawdown > 0 else 0.0
+        win_probability = max(5.0, min(90.0, score))
+        confidence = max(5.0, min(95.0, (win_probability * 0.65) + min(100.0, risk_reward * 25) * 0.35))
+        passed = (
+            win_probability >= float(self.settings.paper_ai_min_win_probability_pct)
+            and risk_reward >= float(self.settings.paper_ai_min_risk_reward)
+            and confidence >= float(self.settings.paper_ai_min_confidence_pct)
+        )
+        return {
+            "passed": passed,
+            "winProbabilityPct": round(win_probability, 2),
+            "expectedMovePoints": round(expected_move, 2),
+            "expectedDrawdownPoints": round(expected_drawdown, 2),
+            "riskReward": round(risk_reward, 2),
+            "confidencePct": round(confidence, 2),
+            "minimums": {
+                "winProbabilityPct": self.settings.paper_ai_min_win_probability_pct,
+                "riskReward": self.settings.paper_ai_min_risk_reward,
+                "confidencePct": self.settings.paper_ai_min_confidence_pct,
+            },
+            "sessionBucket": session_bucket,
+            "model": "heuristic_trade_quality_predictor_v1",
+        }
+
     def _pre_trade_quality(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None, market_phase: str | None = None) -> dict[str, Any]:
         session_adj = session_adj or self._paper_session_settings({})
         premium = float(candidate.get("lastPremium") or 0)
@@ -1435,6 +1505,12 @@ class AutoTraderEngine:
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok:
             reasons.append(high_conf_reason)
+        ai_prediction = self._ai_trade_quality_prediction(candidate, premium=premium, required_move=required_move, session_adj=session_adj, market_phase=market_phase)
+        if not ai_prediction["passed"]:
+            reasons.append(
+                "AI quality predictor rejected: "
+                f"win {ai_prediction['winProbabilityPct']}%, RR {ai_prediction['riskReward']}, confidence {ai_prediction['confidencePct']}%"
+            )
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
             if candidate.get("effectiveVolume", 0) <= 0 and not volume_state.get("volumeAvailable"):
@@ -1466,6 +1542,7 @@ class AutoTraderEngine:
             "chargesEstimate": round(charges, 2),
             "chargesPerUnit": round(charges_per_unit, 4),
             "minimumRequiredMove": round(required_move, 2),
+            "aiPrediction": ai_prediction,
         }
 
     def _open_paper_trade(
@@ -1493,6 +1570,7 @@ class AutoTraderEngine:
         premium = float(candidate.get("lastPremium") or 0)
         lot_size = max(1, int(candidate.get("lotSize") or 1))
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
+        risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0)
@@ -1505,14 +1583,22 @@ class AutoTraderEngine:
             min_allocation = capital * max(0.0, min_allocation_pct) / 100 if capital > 0 else 0.0
             usable_capital = min(max(0.0, available_capital), target_allocation)
             affordable_lots = int(usable_capital // (premium * lot_size))
-            quantity = min(desired_quantity, affordable_lots * lot_size)
-            if quantity * premium < min_allocation:
+            max_trade_loss_amount = float(self.settings.paper_max_trade_loss_amount or 0)
+            max_trade_loss_pct = float(self.settings.paper_max_trade_loss_pct or 0)
+            pct_risk_amount = capital * max_trade_loss_pct / 100 if capital > 0 and max_trade_loss_pct > 0 else 0
+            risk_budget = min([value for value in [max_trade_loss_amount, pct_risk_amount] if value > 0], default=0)
+            per_unit_risk = max(
+                0.05,
+                float(risk_plan["stopPoints"]) + float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0),
+            )
+            risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else affordable_lots
+            quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
+            if risk_budget <= 0 and quantity * premium < min_allocation:
                 return None
         else:
             quantity = desired_quantity
         if quantity < lot_size:
             return None
-        risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         charges = self._charges_estimate(premium, premium, max(1, quantity))
         trade = PaperTrade(
             id=trade_id,

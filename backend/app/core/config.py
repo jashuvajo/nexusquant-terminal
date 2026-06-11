@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     paper_max_daily_loss_pct: float = 5.0
     paper_max_daily_loss_amount: float = 25000.0
     paper_max_consecutive_losses: int = 3
+    paper_max_trade_loss_pct: float = 1.0
+    paper_max_trade_loss_amount: float = 5000.0
+    paper_ai_min_win_probability_pct: float = 65.0
+    paper_ai_min_risk_reward: float = 2.0
+    paper_ai_min_confidence_pct: float = 75.0
     paper_daily_profit_target_amount: float = 50000.0
     paper_daily_profit_target_worst_pct: float = 5.0
     paper_daily_profit_target_medium_pct: float = 8.0
