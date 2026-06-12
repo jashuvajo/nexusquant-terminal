@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
@@ -326,20 +327,111 @@ async def upstox_login_url(auth_service: UpstoxAuthService = Depends(get_upstox_
 async def upstox_callback(
     code: str = Query(..., description="Authorization code returned by Upstox"),
     auth_service: UpstoxAuthService = Depends(get_upstox_auth),
-) -> dict:
+) -> HTMLResponse:
     try:
         token_meta = await auth_service.exchange_code(code)
     except UpstoxAuthError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
-        "message": "Upstox access token stored successfully. You can close this tab and return to NexusQuant.",
-        **token_meta,
-    }
+        html_err = f"""<!DOCTYPE html><html><head><title>Token Error</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>body{{background:#0f172a;color:#f87171;font-family:monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:2rem;}}
+        h1{{font-size:1.5rem;}} p{{color:#94a3b8;font-size:.9rem;}} a{{color:#38bdf8;text-decoration:none;}}</style></head>
+        <body><div><h1>⚠ Token Error</h1><p>{str(exc)}</p>
+        <p style="margin-top:2rem"><a href="https://app.nexusquant.uk/token">← Try Again</a></p></div></body></html>"""
+        return HTMLResponse(html_err, status_code=400)
+    expires_ist = str(token_meta.get("expiresAtIst") or "")[:19].replace("T", " ")
+    html = f"""<!DOCTYPE html><html><head><title>✓ Token Refreshed — NexusQuant</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="refresh" content="4;url=https://app.nexusquant.uk">
+    <style>
+      *{{box-sizing:border-box;margin:0;padding:0;}}
+      body{{background:#0f172a;color:#f1f5f9;font-family:-apple-system,system-ui,sans-serif;
+        display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem;}}
+      .card{{background:#1e293b;border:1px solid #334155;border-radius:1.5rem;padding:2.5rem 2rem;text-align:center;max-width:380px;width:100%;}}
+      .icon{{font-size:3.5rem;margin-bottom:1rem;}}
+      h1{{font-size:1.6rem;font-weight:800;color:#10b981;margin-bottom:.5rem;}}
+      .expires{{background:#0f172a;border-radius:.75rem;padding:.75rem 1rem;margin:1.25rem 0;font-size:.85rem;color:#94a3b8;}}
+      .expires b{{color:#38bdf8;font-family:monospace;}}
+      .bar-wrap{{background:#1e293b;border-radius:999px;height:6px;overflow:hidden;margin:.75rem 0;}}
+      .bar{{background:#10b981;height:100%;border-radius:999px;animation:fill 4s linear forwards;}}
+      @keyframes fill{{from{{width:0}}to{{width:100%}}}}
+      p{{font-size:.85rem;color:#64748b;margin-top:.5rem;}}
+      a{{color:#38bdf8;text-decoration:none;font-size:.85rem;}}
+    </style></head>
+    <body><div class="card">
+      <div class="icon">✓</div>
+      <h1>Token Refreshed</h1>
+      <div class="expires">Valid until<br><b>{expires_ist} IST</b></div>
+      <div class="bar-wrap"><div class="bar"></div></div>
+      <p>Redirecting to NexusQuant...</p>
+      <p style="margin-top:1rem"><a href="https://app.nexusquant.uk">Go now →</a></p>
+    </div></body></html>"""
+    return HTMLResponse(html)
 
 
 @router.get("/upstox/token/status")
 async def upstox_token_status(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
     return await auth_service.token_status()
+
+
+@router.get("/upstox/login", response_class=HTMLResponse)
+async def upstox_login_page(auth_service: UpstoxAuthService = Depends(get_upstox_auth), settings: Settings = Depends(get_settings)) -> HTMLResponse:
+    """Morning token refresh shortcut — one tap from phone home screen."""
+    try:
+        login_url = auth_service.login_url()
+    except Exception:
+        login_url = None
+    token_status = await auth_service.token_status()
+    has_token = bool(token_status.get("hasToken"))
+    expires_ist = str(token_status.get("expiresAtIst") or "")[:19].replace("T", " ")
+    status_color = "#10b981" if has_token else "#f59e0b"
+    status_text = f"Valid until {expires_ist} IST" if has_token else "No token — login required"
+    status_icon = "✓" if has_token else "⚠"
+    btn_text = "Tap to Refresh Upstox Token" if has_token else "Tap to Login with Upstox"
+    configured = bool(settings.upstox_api_key and settings.upstox_redirect_uri)
+    html = f"""<!DOCTYPE html><html><head><title>NexusQuant — Token Refresh</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="NQ Token">
+    <style>
+      *{{box-sizing:border-box;margin:0;padding:0;}}
+      body{{background:#0f172a;color:#f1f5f9;font-family:-apple-system,system-ui,sans-serif;
+        display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem;}}
+      .card{{background:#1e293b;border:1px solid #334155;border-radius:1.75rem;padding:2.5rem 1.75rem;text-align:center;max-width:360px;width:100%;}}
+      .logo{{font-size:.7rem;font-weight:800;letter-spacing:.25em;text-transform:uppercase;color:#475569;margin-bottom:1.5rem;}}
+      .status-icon{{font-size:3rem;margin-bottom:.75rem;}}
+      .status-text{{font-size:.85rem;color:#94a3b8;background:#0f172a;border-radius:.75rem;padding:.6rem 1rem;margin:.75rem 0;}}
+      .status-text b{{color:{status_color};font-family:monospace;}}
+      .btn{{display:block;width:100%;padding:1.1rem 1.5rem;background:linear-gradient(135deg,#0891b2,#0e7490);
+        color:#fff;font-weight:800;font-size:1rem;border:none;border-radius:1rem;cursor:pointer;
+        text-decoration:none;margin-top:1.25rem;letter-spacing:.02em;transition:opacity .15s;}}
+      .btn:active{{opacity:.8;}}
+      .btn.disabled{{background:#1e293b;border:1px solid #334155;color:#475569;cursor:default;}}
+      .sep{{border:none;border-top:1px solid #1e293b;margin:1.25rem 0;}}
+      .app-link{{font-size:.8rem;color:#475569;text-decoration:none;}}
+      .app-link:hover{{color:#94a3b8;}}
+    </style></head>
+    <body><div class="card">
+      <p class="logo">NexusQuant</p>
+      <div class="status-icon">{status_icon}</div>
+      <div class="status-text"><b>{status_text}</b></div>
+      {"<a href='" + login_url + "' class='btn'>" + btn_text + "</a>" if login_url else "<div class='btn disabled'>Upstox not configured</div>"}
+      {"<p style='font-size:.75rem;color:#475569;margin-top:.75rem'>Upstox API key not configured on backend</p>" if not configured else ""}
+      <hr class="sep">
+      <a href="https://app.nexusquant.uk" class="app-link">← Open trading terminal</a>
+    </div></body></html>"""
+    return HTMLResponse(html)
+
+
+@router.get("/deployment/expiry-status")
+async def deployment_expiry_status(settings: Settings = Depends(get_settings)) -> dict:
+    """Shows configured expiry dates for all trading symbols. Used to detect when weekly rollover is needed."""
+    return {
+        "symbols": settings.trading_symbol_list,
+        "expiries": {sym: settings.expiry_for(sym) for sym in settings.trading_symbol_list},
+        "instrumentKeys": {sym: settings.instrument_key_for(sym) for sym in settings.trading_symbol_list},
+        "note": "Set NIFTY_EXPIRY_DATE / SENSEX_EXPIRY_DATE / BANKNIFTY_EXPIRY_DATE in env. Leave blank for auto-resolve from option chain.",
+    }
 
 
 @router.get("/upstox/token/diagnostics")
@@ -1019,6 +1111,11 @@ async def upstox_token_status_alias(auth_service: UpstoxAuthService = Depends(ge
 @alias_router.get("/upstox/token/persist")
 async def upstox_token_persist_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
     return await upstox_token_persist(auth_service)
+
+
+@alias_router.get("/upstox/login", response_class=HTMLResponse)
+async def upstox_login_page_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth), settings: Settings = Depends(get_settings)) -> HTMLResponse:
+    return await upstox_login_page(auth_service, settings)
 
 
 @alias_router.get("/deployment/status")

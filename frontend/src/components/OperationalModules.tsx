@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Card } from './Card';
 import { MetricCard } from './MetricCard';
 import { ScoreBar } from './ScoreBar';
-import { apiUrl } from '../config/api';
+import { apiUrl, displayApiUrl } from '../config/api';
 import type { TerminalSnapshot } from '../types';
 import { formatCurrency, formatNumber } from '../utils/format';
 
@@ -869,6 +869,122 @@ export function SettingsPanel() {
       </div>
       <div className="mt-4 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
         Set <span className="font-mono">AGGRESSION_PROFILE</span> in Railway variables to persist the active profile. Session intelligence automatically adjusts TQS, exposure and cooldown for open drive, midday chop and closing momentum.
+      </div>
+    </Card>
+  );
+}
+
+export function LiveReadinessGate({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const auto = snapshot.autoTrader;
+  const perf = auto?.performanceAnalysis;
+  const lr = perf?.liveReadiness;
+  const rp = perf?.rollingProof;
+  const current = rp?.paperTrades ?? 0;
+  const pf = rp?.profitFactor ?? 0;
+  const winRate = rp?.winRate ?? 0;
+  const dd = rp?.maxDrawdownPct ?? 0;
+  const avgWin = rp?.avgWin ?? 0;
+  const avgLoss = rp?.avgLoss ?? 0;
+  const isReady = lr?.ready ?? false;
+
+  const checks = [
+    { name: '100 clean trades', value: current, required: 100, passed: current >= 100, pct: Math.min(100, (current / 100) * 100) },
+    { name: 'Profit factor ≥ 2.0', value: pf.toFixed(3), required: '≥ 2.0', passed: pf >= 2.0, pct: Math.min(100, (pf / 2.0) * 100) },
+    { name: 'Win rate ≥ 50%', value: `${winRate.toFixed(1)}%`, required: '≥ 50%', passed: winRate >= 50, pct: Math.min(100, (winRate / 50) * 100) },
+    { name: 'Max drawdown ≤ 5%', value: `${dd.toFixed(2)}%`, required: '≤ 5%', passed: dd <= 5 && dd > 0 || dd === 0, pct: dd === 0 ? 100 : Math.min(100, ((5 - Math.min(dd, 5)) / 5) * 100) },
+    { name: 'Avg win > avg loss', value: avgLoss > 0 ? `${(avgWin / avgLoss).toFixed(2)}×` : 'n/a', required: '> 1.0×', passed: avgWin > avgLoss && avgLoss > 0, pct: avgLoss > 0 ? Math.min(100, (avgWin / avgLoss) * 50) : 0 },
+  ];
+
+  return (
+    <Card
+      title={isReady ? '✅ Live Trading Gate — PASSED' : '🔒 Live Trading Gate — Paper Proof Required'}
+      eyebrow="All 5 checks must pass before ENABLE_LIVE_TRADING=true"
+    >
+      <div className={`mb-4 rounded-2xl border p-4 text-center ${isReady ? 'border-emerald-300/30 bg-emerald-300/10' : 'border-rose-300/20 bg-rose-300/8'}`}>
+        <p className={`text-2xl font-black ${isReady ? 'text-emerald-300' : 'text-rose-300'}`}>{isReady ? 'LIVE READY' : 'PAPER ONLY'}</p>
+        <p className="mt-1 text-xs text-slate-400">{lr?.message ?? 'Complete 100 clean paper trades with PF ≥ 2.0 to unlock live trading'}</p>
+      </div>
+      <div className="space-y-3">
+        {checks.map((c) => (
+          <div key={c.name} className="rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-slate-300">{c.name}</span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-white">{c.value}</span>
+                <span className={`text-xs font-bold ${c.passed ? 'text-emerald-300' : 'text-rose-300'}`}>{c.passed ? '✓' : '✗'}</span>
+              </div>
+            </div>
+            <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+              <div className={`h-full rounded-full transition-all ${c.passed ? 'bg-emerald-400' : 'bg-rose-400/60'}`} style={{ width: `${c.pct}%` }} />
+            </div>
+            <p className="mt-1 text-[10px] text-slate-500">Target: {c.required}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-400">
+        Rolling proof: <span className="font-mono text-cyan-200">{current}/{rp?.windowTrades ?? 100}</span> trades.
+        {' '}Expectancy: <span className={`font-mono ${(rp?.expectancy ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{formatCurrency(rp?.expectancy ?? 0)}/trade</span>.
+        {' '}When all gates pass → set <span className="font-mono text-amber-200">ENABLE_LIVE_TRADING=true</span>.
+      </div>
+    </Card>
+  );
+}
+
+export function MorningChecklistPanel() {
+  const [tokenStatus, setTokenStatus] = useState<{ hasToken: boolean; expiresAtIst: string; source: string } | null>(null);
+  const [expiryStatus, setExpiryStatus] = useState<{ symbols: string[]; expiries: Record<string, string | null> } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${apiUrl}/api/upstox/token/status`).then((r) => r.json()).catch(() => null),
+      fetch(`${apiUrl}/api/deployment/expiry-status`).then((r) => r.json()).catch(() => null),
+    ]).then(([ts, es]) => { setTokenStatus(ts); setExpiryStatus(es); setLoading(false); });
+  }, []);
+
+  const tokenOk = tokenStatus?.hasToken ?? false;
+  const expiresStr = tokenStatus?.expiresAtIst ? tokenStatus.expiresAtIst.slice(0, 19).replace('T', ' ') + ' IST' : 'unknown';
+
+  return (
+    <Card title="Morning Checklist" eyebrow="Complete before 09:15 IST every trading day — bookmark /api/upstox/login for 1-tap token refresh">
+      <div className="space-y-3">
+        <div className={`rounded-2xl border p-4 ${tokenOk ? 'border-emerald-300/25 bg-emerald-300/8' : 'border-rose-300/25 bg-rose-300/8'}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-bold text-white">1. Upstox Token</p>
+              {loading ? <p className="text-xs text-slate-500">Checking…</p>
+                : tokenOk ? <p className="text-xs text-emerald-300">✓ Valid until {expiresStr} — refreshes needed daily at 03:30 IST</p>
+                : <p className="text-xs text-rose-300">⚠ Missing — tap to refresh before market opens</p>}
+            </div>
+            <a href={`${displayApiUrl}/api/upstox/login`} target="_blank" rel="noreferrer"
+              className={`rounded-xl border px-4 py-2 text-xs font-bold transition ${tokenOk ? 'border-emerald-300/30 bg-emerald-300/10 text-emerald-200 hover:bg-emerald-300/20' : 'border-rose-300/30 bg-rose-300/15 text-rose-200 hover:bg-rose-300/25'}`}>
+              {tokenOk ? 'Refresh ↗' : 'Login ↗'}
+            </a>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+          <p className="text-sm font-bold text-white mb-2">2. Option Expiry Dates</p>
+          {loading ? <p className="text-xs text-slate-500">Checking…</p>
+            : expiryStatus ? (
+              <div className="grid gap-2 sm:grid-cols-3">
+                {expiryStatus.symbols.map((sym) => (
+                  <div key={sym} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500">{sym}</p>
+                    <p className="font-mono text-sm text-cyan-200">{expiryStatus.expiries[sym] ?? 'Auto-resolve ✓'}</p>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="text-xs text-slate-500">Unavailable</p>}
+          <p className="mt-2 text-xs text-slate-500">NIFTY/BANKNIFTY: weekly Thursday · SENSEX: weekly Thursday. Update env file on rollover day.</p>
+        </div>
+        <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+          <p className="text-sm font-bold text-white mb-1">3. Reset Paper Trades</p>
+          <p className="text-xs text-slate-400 mb-3">Fresh start each day for clean daily performance tracking.</p>
+          <a href={`${apiUrl}/api/auto-trader/reset`} target="_blank" rel="noreferrer"
+            className="inline-block rounded-lg border border-rose-300/30 bg-rose-300/10 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-300/20">
+            Reset Paper Trades →
+          </a>
+        </div>
       </div>
     </Card>
   );
