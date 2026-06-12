@@ -43,8 +43,8 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
         "configuredInstruments": instruments,
         "count": len(items),
         "breadthQuality": {
-            "sufficient": len(items) >= 20,
-            "minimumRecommended": 20,
+            "sufficient": len(items) >= 15,
+            "minimumRecommended": 15,
             "message": "Breadth is reliable with broad stock/sector coverage." if len(items) >= 20 else "Breadth is directionally useful but limited; add more stock/sector instruments for institutional-grade confirmation.",
         },
         "breadth": {

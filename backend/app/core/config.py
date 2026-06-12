@@ -52,10 +52,8 @@ class Settings(BaseSettings):
     expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = (
         "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX,NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty IT,"
-        "NSE_INDEX|Nifty Financial Services,NSE_INDEX|Nifty Auto,NSE_INDEX|Nifty FMCG,"
-        "NSE_INDEX|Nifty Pharma,NSE_INDEX|Nifty Metal,NSE_INDEX|Nifty Realty,NSE_INDEX|Nifty PSU Bank,"
-        "NSE_INDEX|Nifty Private Bank,NSE_INDEX|Nifty Oil & Gas,NSE_INDEX|Nifty Healthcare Index,"
-        "NSE_INDEX|Nifty Consumer Durables,NSE_INDEX|Nifty Media,NSE_INDEX|Nifty Energy,"
+        "NSE_INDEX|Nifty Auto,NSE_INDEX|Nifty FMCG,NSE_INDEX|Nifty Pharma,NSE_INDEX|Nifty Metal,"
+        "NSE_INDEX|Nifty Realty,NSE_INDEX|Nifty PSU Bank,NSE_INDEX|Nifty Media,NSE_INDEX|Nifty Energy,"
         "NSE_INDEX|Nifty Next 50,NSE_INDEX|Nifty 100,NSE_INDEX|Nifty Midcap 50,NSE_INDEX|India VIX"
     )
     market_snapshot_monitor_enabled: bool = True
@@ -100,7 +98,7 @@ class Settings(BaseSettings):
     paper_breadth_min_count: int = 2
     paper_breadth_bullish_threshold: float = 60.0
     paper_breadth_bearish_threshold: float = 40.0
-    market_breadth_recommended_count: int = 20
+    market_breadth_recommended_count: int = 15
     paper_live_readiness_min_trades: int = 100
     paper_live_readiness_min_profit_factor: float = 2.0
     paper_live_readiness_min_win_rate_pct: float = 50.0
