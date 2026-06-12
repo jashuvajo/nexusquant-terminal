@@ -1523,6 +1523,39 @@ class AutoTraderEngine:
             return f"{side} side underperforming today; best observed side is {best_side} with PF {best_pf:.2f}"
         return None
 
+    def _entry_correlation_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> str | None:
+        side = str(candidate.get("side") or "").upper()
+        bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        if int(self.settings.paper_max_open_trades) > 0 and len(self.open_paper) >= int(self.settings.paper_max_open_trades):
+            return f"max open paper trades reached ({self.settings.paper_max_open_trades}); avoid correlated stacking"
+        same_side_open = [trade for trade in self.open_paper.values() if str(trade.side or "").upper() == side]
+        if int(self.settings.paper_max_open_same_side_trades) > 0 and len(same_side_open) >= int(self.settings.paper_max_open_same_side_trades):
+            return f"{side} side already has an open paper trade"
+        now = datetime.now(timezone.utc)
+        entry_cooldown = max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
+        loss_cooldown = max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
+        for trade in reversed(list(self.closed_paper)[-50:]):
+            if str(trade.side or "").upper() != side:
+                continue
+            if self._trade_bucket(trade) != bucket:
+                continue
+            timestamp = None
+            for raw in [trade.exited_at, trade.opened_at]:
+                if raw:
+                    try:
+                        timestamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                        break
+                    except ValueError:
+                        continue
+            if not timestamp:
+                continue
+            age_seconds = (now - timestamp.astimezone(timezone.utc)).total_seconds()
+            if trade.pnl < 0 and age_seconds <= loss_cooldown:
+                return f"{side} side loss cooldown active in {bucket} after {trade.symbol} loss ({int((loss_cooldown - age_seconds) // 60)}m left)"
+            if age_seconds <= entry_cooldown:
+                return f"{side} side same-window entry cooldown active after {trade.symbol} trade ({int((entry_cooldown - age_seconds) // 60)}m left)"
+        return None
+
     def _breadth_confirmation(self, side: str) -> dict[str, Any]:
         snapshot = self._latest_market_snapshot or {}
         breadth = snapshot.get("breadth") or {}
@@ -1648,6 +1681,9 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner:
             reasons.append("chop filter blocked")
+        correlation_gate = self._entry_correlation_gate(candidate, session_adj)
+        if correlation_gate:
+            reasons.append(correlation_gate)
         side_gate = self._side_performance_gate(candidate)
         if side_gate:
             reasons.append(side_gate)

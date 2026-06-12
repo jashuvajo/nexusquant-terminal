@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     paper_max_consecutive_losses: int = 3
     paper_max_trade_loss_pct: float = 1.0
     paper_max_trade_loss_amount: float = 5000.0
+    paper_max_open_trades: int = 1
+    paper_max_open_same_side_trades: int = 1
+    paper_same_side_entry_cooldown_seconds: int = 1800
+    paper_same_side_loss_cooldown_seconds: int = 3600
     paper_ai_min_win_probability_pct: float = 65.0
     paper_ai_min_risk_reward: float = 2.0
     paper_ai_min_confidence_pct: float = 75.0

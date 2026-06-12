@@ -209,6 +209,8 @@ export interface MarketSnapshotBreadth {
   source?: string;
   updatedAt?: string;
   count?: number;
+  configuredInstruments?: string[];
+  breadthQuality?: { sufficient: boolean; minimumRecommended: number; message: string };
   breadth?: { advancing: number; declining: number; unchanged: number; score: number; bias: string };
   gainers?: Array<Record<string, unknown>>;
   losers?: Array<Record<string, unknown>>;

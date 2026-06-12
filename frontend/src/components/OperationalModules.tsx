@@ -612,6 +612,26 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         </div>
       </Card>
 
+      {snapshot.marketSnapshot && (
+        <Card title="Market Breadth Universe" eyebrow="Participation confirmation used by paper trade quality gate">
+          <div className="grid gap-3 md:grid-cols-4">
+            <MetricCard label="Breadth Bias" value={snapshot.marketSnapshot.breadth?.bias ?? 'N/A'} helper={`Score ${snapshot.marketSnapshot.breadth?.score ?? 0}`} tone={snapshot.marketSnapshot.breadth?.bias === 'BULLISH' ? 'emerald' : snapshot.marketSnapshot.breadth?.bias === 'BEARISH' ? 'rose' : 'amber'} />
+            <MetricCard label="Coverage" value={`${snapshot.marketSnapshot.count ?? 0}/${snapshot.marketSnapshot.breadthQuality?.minimumRecommended ?? 15}`} helper={snapshot.marketSnapshot.breadthQuality?.sufficient ? 'Sufficient' : 'Limited'} tone={snapshot.marketSnapshot.breadthQuality?.sufficient ? 'emerald' : 'amber'} />
+            <MetricCard label="Advancing" value={snapshot.marketSnapshot.breadth?.advancing ?? 0} helper="Configured universe" tone="emerald" />
+            <MetricCard label="Declining" value={snapshot.marketSnapshot.breadth?.declining ?? 0} helper="Configured universe" tone="rose" />
+          </div>
+          <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
+            <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">Tracked indices/sectors</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(snapshot.marketSnapshot.configuredInstruments ?? []).map((item) => (
+                <span key={item} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 font-mono text-[11px] text-slate-300">{item.replace('NSE_INDEX|', '').replace('BSE_INDEX|', '')}</span>
+              ))}
+            </div>
+            {snapshot.marketSnapshot.breadthQuality?.message && <p className="mt-3 text-amber-200">{snapshot.marketSnapshot.breadthQuality.message}</p>}
+          </div>
+        </Card>
+      )}
+
       {performance && profilePlan && (
         <Card title="Paper Performance Optimizer" eyebrow="Best observed bucket, side, symbol and time-based aggression schedule">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
