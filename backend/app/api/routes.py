@@ -223,13 +223,15 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
             snapshots[symbol] = result
     if not snapshots:
         raise HTTPException(status_code=503, detail=errors)
+    settings = get_settings()
+    primary_symbol = settings.primary_symbol.upper()
+    primary = snapshots.get(primary_symbol) or snapshots.get("NIFTY") or snapshots.get("SENSEX") or next(iter(snapshots.values()))
     candidates = []
     for symbol, snapshot in snapshots.items():
         for trade in snapshot.get("suggestedTrades") or []:
             candidates.append({"symbol": symbol, **trade})
     market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
     try:
-        settings = get_settings()
         instruments = settings.market_snapshot_instrument_list
         if instruments:
             client = get_upstox(settings, get_upstox_auth(settings))
@@ -241,7 +243,16 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
             market_snapshot = {"available": True, **summarize_market_movers(instruments, quote_payload)}
     except Exception as exc:
         market_snapshot = {"available": False, "reason": str(exc)}
-    payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates, "marketSnapshot": market_snapshot}
+    payload = {
+        **primary,
+        "type": "multi_snapshot",
+        "displaySymbol": primary.get("symbol"),
+        "backgroundSymbols": ["NIFTY", "SENSEX"],
+        "snapshots": snapshots,
+        "symbolErrors": errors,
+        "executionCandidates": candidates,
+        "marketSnapshot": market_snapshot,
+    }
     session_state = current_session_state()
     if session_state.phase == "LIVE_MARKET":
         payload["autoTrader"] = await auto_engine.process(payload)
