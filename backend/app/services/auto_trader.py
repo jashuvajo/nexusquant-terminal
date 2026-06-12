@@ -1571,11 +1571,11 @@ class AutoTraderEngine:
             bullish = score >= float(self.settings.paper_breadth_bullish_threshold)
             bearish = score <= float(self.settings.paper_breadth_bearish_threshold)
             if side == "CALL":
-                aligned = not bearish
-                reason = "CALL aligned with market breadth" if aligned else f"CALL rejected: breadth bearish ({score:.1f})"
+                aligned = bullish
+                reason = "CALL aligned with bullish breadth" if aligned else f"CALL rejected: breadth not bullish ({score:.1f})"
             elif side == "PUT":
-                aligned = not bullish
-                reason = "PUT aligned with market breadth" if aligned else f"PUT rejected: breadth bullish ({score:.1f})"
+                aligned = bearish
+                reason = "PUT aligned with bearish breadth" if aligned else f"PUT rejected: breadth not bearish ({score:.1f})"
         return {
             "available": bool(snapshot.get("available")) and enough_data,
             "enabled": enabled,
@@ -1850,7 +1850,7 @@ class AutoTraderEngine:
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology, session_max_hold)
             style = str(profile.get("executionStyle") or "GENERIC")
             is_runner = trade.strategy_type == "EXPLOSIVE_RUNNER"
-            if style == "RUNNER_BREAKOUT":
+            if is_runner or style == "RUNNER_BREAKOUT":
                 target_points = max(target_points, self.settings.paper_target_points * 1.5)
                 max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
                 breakeven_shift = max(breakeven_shift, target_points * 0.45)
@@ -1865,8 +1865,12 @@ class AutoTraderEngine:
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
             if is_runner and trade.best_price >= trade.entry_price + target_points and current <= trade.best_price - float(trade.trail_points or target_points * 0.45):
                 reason = "elite runner trailing max-points lock"
-            elif is_runner and age >= max_hold_seconds and trade.best_price > trade.entry_price:
-                reason = "elite runner max hold profit lock"
+            elif is_runner and age >= max_hold_seconds:
+                min_lock_profit = target_points * 0.35
+                if current >= trade.entry_price + min_lock_profit:
+                    reason = "elite runner max hold profit lock"
+                else:
+                    reason = "runner time stop"
             elif not is_runner and current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
             elif trade.breakeven_armed and current <= trade.entry_price and (not is_runner or age >= runner_min_hold):
@@ -2053,16 +2057,16 @@ class AutoTraderEngine:
         adjusted_stop = float(stop_points)
         reason = None
         if permission == "BLOCK_NEW_TRADES" or state == "HALT_AND_REVIEW":
-            adjusted_stop = min(adjusted_stop, max(1.0, stop_points * 0.45))
-            max_hold = min(max_hold, 60)
+            adjusted_stop = min(adjusted_stop, max(1.5, stop_points * 0.60))
+            max_hold = min(max_hold, 90)
             reason = "psychology halt defensive stop"
         elif permission == "WAIT" or state == "DEFENSIVE":
-            adjusted_stop = min(adjusted_stop, max(1.25, stop_points * 0.6))
-            max_hold = min(max_hold, 90)
+            adjusted_stop = min(adjusted_stop, max(2.0, stop_points * 0.75))
+            max_hold = min(max_hold, 150)
             reason = "psychology defensive stop"
         elif state == "CAUTIOUS":
-            adjusted_stop = min(adjusted_stop, max(1.5, stop_points * 0.75))
-            max_hold = min(max_hold, 150)
+            adjusted_stop = min(adjusted_stop, max(2.5, stop_points * 0.85))
+            # CAUTIOUS: tighten stop slightly but preserve full hold time so targets can be reached
             reason = "psychology cautious stop"
         return round(adjusted_stop, 2), max_hold, reason
 

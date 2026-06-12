@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     open_drive_profit_target_primary_pct: float = 33.0
     open_drive_profit_stop_pct: float = 33.0
     open_drive_allocation_multiplier: float = 1.85
-    max_paper_trade_seconds: int = 180
+    max_paper_trade_seconds: int = 240
     paper_duplicate_signal_cooldown_seconds: int = 300
     paper_trade_allocation_pct: float = 12.0
     paper_min_trade_allocation_pct: float = 8.0
@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     paper_runner_max_target_premium_pct: float = 45.0
     paper_runner_trail_retain_pct: float = 45.0
     paper_runner_min_hold_seconds: int = 90
-    paper_runner_max_hold_seconds: int = 420
+    paper_runner_max_hold_seconds: int = 600
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
