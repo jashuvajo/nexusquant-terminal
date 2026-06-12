@@ -120,6 +120,7 @@ class ExplosiveRunnerEngine:
             premium_velocity >= momentum_premium_velocity_pct
             or (breakout >= 70 and volume_accel >= 45)
             or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
+            or (breakout >= 62 and abs(delta_velocity) >= 58 and spread_quality >= 85)
         )
         if premium_velocity >= momentum_premium_velocity_pct:
             score += min(22, 10 + premium_velocity * 1.2)
@@ -154,7 +155,10 @@ class ExplosiveRunnerEngine:
 
         missing_ideal = [item for item in self.IDEAL_DATA if not (item == "historical option premium candles" and self.option_premium_history_available)]
         ideal_available = ["historical option premium candles"] if self.option_premium_history_available else []
-        option_tape_override = spread_quality >= 70 and (volume_accel >= 45 or momentum_surge) and (breakout >= 60 or abs(delta_velocity) >= 35)
+        option_tape_override = (
+            (spread_quality >= 70 and (volume_accel >= 45 or momentum_surge) and (breakout >= 60 or abs(delta_velocity) >= 35))
+            or (spread_quality >= 88 and breakout >= 60 and abs(delta_velocity) >= 55)
+        )
         elite_runner = (
             score >= elite_min_score
             and momentum_surge
@@ -168,7 +172,7 @@ class ExplosiveRunnerEngine:
         if elite_runner:
             confidence = "HIGH"
             reasons.append("elite explosive runner: momentum, spread, delta and direction aligned")
-        elif score >= 85 and option_tape_override and breakout >= 75 and abs(delta_velocity) >= 60:
+        elif score >= 85 and option_tape_override and breakout >= 62 and abs(delta_velocity) >= 58:
             confidence = "HIGH"
             reasons.append("option tape override: explosive premium momentum despite lower global TQS")
         elif score >= 75 and (tqs >= 70 or momentum_surge):
