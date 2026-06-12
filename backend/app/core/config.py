@@ -50,7 +50,14 @@ class Settings(BaseSettings):
     snapshot_cache_seconds: float = 5.0
     account_snapshot_cache_seconds: float = 30.0
     expiry_cache_seconds: float = 3600.0
-    market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
+    market_snapshot_instrument_keys: str = (
+        "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX,NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty IT,"
+        "NSE_INDEX|Nifty Financial Services,NSE_INDEX|Nifty Auto,NSE_INDEX|Nifty FMCG,"
+        "NSE_INDEX|Nifty Pharma,NSE_INDEX|Nifty Metal,NSE_INDEX|Nifty Realty,NSE_INDEX|Nifty PSU Bank,"
+        "NSE_INDEX|Nifty Private Bank,NSE_INDEX|Nifty Oil & Gas,NSE_INDEX|Nifty Healthcare Index,"
+        "NSE_INDEX|Nifty Consumer Durables,NSE_INDEX|Nifty Media,NSE_INDEX|Nifty Energy,"
+        "NSE_INDEX|Nifty Next 50,NSE_INDEX|Nifty 100,NSE_INDEX|Nifty Midcap 50,NSE_INDEX|India VIX"
+    )
     market_snapshot_monitor_enabled: bool = True
     market_snapshot_poll_seconds: float = 60.0
     # Optimized profiles from high-win optimizer run.

@@ -284,7 +284,12 @@ async def refresh_market_snapshot_cache() -> dict:
         payload = await upstox_client.full_market_quote(instruments)
         MARKET_SNAPSHOT_CACHE = {"available": True, **summarize_market_movers(instruments, payload)}
     except Exception as exc:
-        MARKET_SNAPSHOT_CACHE = {"available": False, "reason": str(exc), "configuredInstruments": instruments}
+        fallback = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
+        try:
+            payload = await upstox_client.full_market_quote(fallback)
+            MARKET_SNAPSHOT_CACHE = {"available": True, "fallbackReason": str(exc), **summarize_market_movers(fallback, payload)}
+        except Exception as fallback_exc:
+            MARKET_SNAPSHOT_CACHE = {"available": False, "reason": str(fallback_exc), "configuredInstruments": instruments}
     return MARKET_SNAPSHOT_CACHE
 
 async def receive_client_heartbeats(websocket: WebSocket) -> None:
