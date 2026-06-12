@@ -1900,16 +1900,18 @@ class AutoTraderEngine:
                 trade.partial_exit_taken = True
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
-            if is_runner and trade.best_price >= trade.entry_price + target_points * 0.60 and current <= trade.best_price - float(trade.trail_points or target_points * 0.30):
-                reason = "elite runner trailing max-points lock"
+            scalp_trail = max(2.0, target_points * 0.35)
+            trail_pts = float(trade.trail_points or (target_points * 0.30 if is_runner else scalp_trail))
+            in_profitable_trail = trade.best_price >= trade.entry_price + target_points * 0.60
+            if in_profitable_trail and current <= trade.best_price - trail_pts:
+                reason = "elite runner trailing max-points lock" if is_runner else "trailing profit lock"
             elif is_runner and age >= max_hold_seconds:
-                min_lock_profit = target_points * 0.35
-                if current >= trade.entry_price + min_lock_profit:
+                if in_profitable_trail and current > trade.entry_price + 2.0:
+                    pass  # still in profitable trailing zone — let trail exit handle it
+                elif current >= trade.entry_price + target_points * 0.35:
                     reason = "elite runner max hold profit lock"
                 else:
                     reason = "runner time stop"
-            elif not is_runner and current >= trade.entry_price + target_points:
-                reason = "trailing profit lock / target extension"
             elif trade.breakeven_armed and current <= trade.entry_price + 2.0 and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
