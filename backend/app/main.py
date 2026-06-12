@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -54,6 +55,7 @@ _market_snapshot_tick = 0.0
 async def lifespan(app: FastAPI):
     await storage.connect()
     await event_journal.connect()
+    await auth_service.warm_token_cache()
     monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
     yield
     if monitor_task:
@@ -85,6 +87,7 @@ async def health() -> dict[str, str | bool]:
         "status": "ok",
         "service": settings.app_name,
         "environment": settings.environment,
+        "backendCommit": os.getenv("NEXUSQUANT_BACKEND_COMMIT", "unknown"),
         "upstoxConfigured": token_status["configured"],
         "upstoxTokenPresent": token_status["hasToken"],
     }
@@ -282,7 +285,12 @@ async def refresh_market_snapshot_cache() -> dict:
         payload = await upstox_client.full_market_quote(instruments)
         MARKET_SNAPSHOT_CACHE = {"available": True, **summarize_market_movers(instruments, payload)}
     except Exception as exc:
-        MARKET_SNAPSHOT_CACHE = {"available": False, "reason": str(exc), "configuredInstruments": instruments}
+        fallback = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
+        try:
+            payload = await upstox_client.full_market_quote(fallback)
+            MARKET_SNAPSHOT_CACHE = {"available": True, "fallbackReason": str(exc), **summarize_market_movers(fallback, payload)}
+        except Exception as fallback_exc:
+            MARKET_SNAPSHOT_CACHE = {"available": False, "reason": str(fallback_exc), "configuredInstruments": instruments}
     return MARKET_SNAPSHOT_CACHE
 
 async def receive_client_heartbeats(websocket: WebSocket) -> None:

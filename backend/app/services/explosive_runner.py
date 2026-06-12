@@ -54,6 +54,10 @@ class ExplosiveRunnerEngine:
         chart_bias: str | None = None,
         option_direction: str | None = None,
         momentum_premium_velocity_pct: float = 5.0,
+        elite_min_score: float = 92.0,
+        elite_breakout_min: float = 70.0,
+        elite_delta_velocity_min: float = 55.0,
+        elite_spread_min: float = 78.0,
     ) -> dict[str, Any]:
         volume = _num(selected_md.get("volume")) or _num(volume_state.get("effectiveVolume"))
         oi = _num(selected_md.get("oi"))
@@ -116,6 +120,7 @@ class ExplosiveRunnerEngine:
             premium_velocity >= momentum_premium_velocity_pct
             or (breakout >= 70 and volume_accel >= 45)
             or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
+            or (breakout >= 62 and abs(delta_velocity) >= 58 and spread_quality >= 85)
         )
         if premium_velocity >= momentum_premium_velocity_pct:
             score += min(22, 10 + premium_velocity * 1.2)
@@ -150,9 +155,24 @@ class ExplosiveRunnerEngine:
 
         missing_ideal = [item for item in self.IDEAL_DATA if not (item == "historical option premium candles" and self.option_premium_history_available)]
         ideal_available = ["historical option premium candles"] if self.option_premium_history_available else []
-        option_tape_override = spread_quality >= 70 and (volume_accel >= 45 or momentum_surge) and (breakout >= 60 or abs(delta_velocity) >= 35)
+        option_tape_override = (
+            (spread_quality >= 70 and (volume_accel >= 45 or momentum_surge) and (breakout >= 60 or abs(delta_velocity) >= 35))
+            or (spread_quality >= 88 and breakout >= 60 and abs(delta_velocity) >= 55)
+        )
+        elite_runner = (
+            score >= elite_min_score
+            and momentum_surge
+            and momentum_aligned
+            and spread_quality >= elite_spread_min
+            and breakout >= elite_breakout_min
+            and abs(delta_velocity) >= elite_delta_velocity_min
+            and volume > 0
+        )
         confidence = "LOW"
-        if score >= 85 and option_tape_override and breakout >= 75 and abs(delta_velocity) >= 60:
+        if elite_runner:
+            confidence = "HIGH"
+            reasons.append("elite explosive runner: momentum, spread, delta and direction aligned")
+        elif score >= 85 and option_tape_override and breakout >= 62 and abs(delta_velocity) >= 58:
             confidence = "HIGH"
             reasons.append("option tape override: explosive premium momentum despite lower global TQS")
         elif score >= 75 and (tqs >= 70 or momentum_surge):
@@ -174,10 +194,10 @@ class ExplosiveRunnerEngine:
                 confidence = "MEDIUM"
                 reasons.append("momentum runner auto-candidate")
 
-        target_pct = 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
-        hard_stop_pct = 12 if confidence == "HIGH" else 8
-        trail_pct = 18 if confidence == "HIGH" else 12
-        partial_pct = 0.35 if confidence == "HIGH" else 0.5
+        target_pct = 45 if elite_runner else 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
+        hard_stop_pct = 10 if elite_runner else 12 if confidence == "HIGH" else 8
+        trail_pct = 24 if elite_runner else 18 if confidence == "HIGH" else 12
+        partial_pct = 0.25 if elite_runner else 0.35 if confidence == "HIGH" else 0.5
 
         return {
             "strategyType": "EXPLOSIVE_RUNNER",
@@ -195,6 +215,14 @@ class ExplosiveRunnerEngine:
             "trailPct": trail_pct,
             "partialExitPct": partial_pct,
             "runnerPct": round(1 - partial_pct, 2),
+            "eliteRunner": elite_runner,
+            "maxPointsPlan": {
+                "targetPremiumPct": target_pct,
+                "hardStopPct": hard_stop_pct,
+                "trailPct": trail_pct,
+                "partialExitPct": partial_pct,
+                "holdBias": "maximize_points_with_trailing_lock" if elite_runner else "standard_runner",
+            },
             "momentumSurge": momentum_surge,
             "directionalBias": directional_bias,
             "momentumAligned": momentum_aligned,

@@ -13,7 +13,7 @@ from app.core.config import Settings
 from app.services.ai_learning import ContinuousAILearner
 from app.services.paper_session_manager import PaperSessionManager
 from app.services.risk_profiles import paper_session_adjustments
-from app.services.session import MarketPhase
+from app.services.session import IST, MarketPhase
 from app.services.trading_control import TradingControl
 
 
@@ -176,6 +176,7 @@ class AutoTraderEngine:
         self.open_paper = AutoTraderEngine._shared_open_paper
         self.closed_paper = AutoTraderEngine._shared_closed_paper
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
+        self._latest_market_snapshot: dict[str, Any] = {}
         self._load_replay_file()
         self._load_paper_trades_file()
 
@@ -190,12 +191,16 @@ class AutoTraderEngine:
         session_adj = self._paper_session_settings(payload)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
+        self._latest_market_snapshot = payload.get("marketSnapshot") or {}
         cached_snapshot = self._all_snapshots_cached(snapshots)
         signal_cooldown_seconds = int(session_adj.get("duplicateCooldownSeconds") or self.settings.paper_duplicate_signal_cooldown_seconds)
         market_phase = str(payload.get("marketPhase") or MarketPhase.LIVE_MARKET.value)
 
         pre_trade_psychology = self._psychology_report([], [], self._paper_risk_halt(trading_capital), session_adj)
         exits = self._update_open_paper(snapshots, pre_trade_psychology, session_adj)
+        target_lock = self._maybe_lock_daily_profit_target(snapshots)
+        if target_lock.get("lockedTrades"):
+            exits.extend(target_lock["lockedTrades"])
         rotation_event = self._maybe_rotate_paper_session(snapshots, session_adj, trading_capital)
         risk_halt = self._paper_risk_halt(trading_capital, session_adj)
         pre_trade_psychology = self._psychology_report([], [], risk_halt, session_adj)
@@ -264,8 +269,10 @@ class AutoTraderEngine:
             "psychology": psychology,
             "onlineLearning": online_learning,
             "dailyReport": self.daily_report(),
-            "paperSessions": self.paper_sessions.status_payload(self._session_report()),
+            "paperSessions": self._paper_sessions_status(),
             "sessionRotation": rotation_event,
+            "targetLock": target_lock,
+            "performanceAnalysis": self.performance_analysis(),
         }
 
     def status(self) -> dict[str, Any]:
@@ -273,6 +280,7 @@ class AutoTraderEngine:
             "paperTrading": self.settings.paper_trading,
             "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
             "paperTradingRespectsStop": self.settings.paper_trading_respects_stop,
+            "liveTradingEnabled": self.settings.enable_live_trading,
             "openPaperTrades": [trade.to_dict() for trade in self.open_paper.values()],
             "closedPaperTrades": [trade.to_dict() for trade in list(self.closed_paper)[-25:]],
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],
@@ -282,11 +290,61 @@ class AutoTraderEngine:
             "psychology": self._psychology_report([], [], self._paper_risk_halt()),
             "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
-            "paperSessions": self.paper_sessions.status_payload(self._session_report()),
+            "paperSessions": self._paper_sessions_status(),
+            "targetLock": self._target_lock_status(),
+            "performanceAnalysis": self.performance_analysis(),
         }
 
     def paper_sessions_history(self, limit: int = 50) -> dict[str, Any]:
         return self.paper_sessions.list_sessions(limit)
+
+    def performance_analysis(self) -> dict[str, Any]:
+        trades = self._today_closed_trades()
+        by_bucket = self._group_trade_summary(trades, lambda trade: self._trade_bucket(trade))
+        by_symbol = self._group_trade_summary(trades, lambda trade: trade.symbol or "UNKNOWN")
+        by_side = self._group_trade_summary(trades, lambda trade: trade.side or "UNKNOWN")
+        by_session = self._group_trade_summary(trades, lambda trade: trade.paper_session_id or "UNKNOWN")
+        best_bucket = self._best_summary_key(by_bucket)
+        best_symbol = self._best_summary_key(by_symbol)
+        best_side = self._best_summary_key(by_side)
+        day_summary = self._summarize_trades(trades)
+        target_info = self._daily_profit_target()
+        target_amount = float(target_info.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 50000.0)
+        rolling_proof = self._rolling_proof()
+        recent_postmortems = [self._trade_postmortem(trade) for trade in trades[-10:]]
+        return {
+            "tradingDay": datetime.now(IST).date().isoformat(),
+            "target": {
+                "capital": float(self.settings.trading_capital_default or 0),
+                "dailyProfitAmount": target_amount,
+                "dailyProfitPct": target_info.get("targetPct") or round(target_amount / float(self.settings.trading_capital_default or 1) * 100, 2),
+                "dayQuality": target_info.get("quality"),
+                "qualityReason": target_info.get("reason"),
+                "tiers": target_info.get("tiers"),
+                "currentNetPnl": day_summary["netPnl"],
+                "remainingToTarget": round(target_amount - float(day_summary["netPnl"] or 0), 2),
+            },
+            "summary": day_summary,
+            "byBucket": by_bucket,
+            "bySymbol": by_symbol,
+            "bySide": by_side,
+            "bySession": by_session,
+            "bestObserved": {
+                "bucket": best_bucket,
+                "symbol": best_symbol,
+                "side": best_side,
+            },
+            "rollingProof": rolling_proof,
+            "liveReadiness": self._live_readiness(rolling_proof),
+            "recentPostmortems": recent_postmortems,
+            "breadthReadiness": self._breadth_readiness(),
+            "institutionalAggressionProfiles": self._institutional_profile_recommendations(by_bucket, by_symbol, by_side),
+            "rulesApplied": [
+                "Use day-level paper PnL for profit factor; current-session report is separate.",
+                "Do not open duplicate paper trades on the same instrument key during cooldown.",
+                "Stop new paper entries after the configured daily profit target or daily loss guard is hit.",
+            ],
+        }
 
     def reset(self) -> dict[str, Any]:
         self.replay_buffer.clear()
@@ -346,12 +404,16 @@ class AutoTraderEngine:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 return
+            restored_session_id = str(payload.get("currentSessionId") or "")
+            restored_started_at: str | None = None
             for item in payload.get("open") or []:
                 if not isinstance(item, dict):
                     continue
                 trade = PaperTrade.from_dict(item)
                 if trade.status == "OPEN":
                     self.open_paper[trade.id] = trade
+                    if trade.paper_session_id == restored_session_id:
+                        restored_started_at = restored_started_at or trade.opened_at
             limit = max(100, int(self.settings.paper_trades_persist_limit))
             for item in (payload.get("closed") or [])[-limit:]:
                 if not isinstance(item, dict):
@@ -359,6 +421,10 @@ class AutoTraderEngine:
                 trade = PaperTrade.from_dict(item)
                 if trade.status == "EXITED":
                     self.closed_paper.append(trade)
+                    if trade.paper_session_id == restored_session_id:
+                        restored_started_at = restored_started_at or trade.opened_at
+            if restored_session_id:
+                self.paper_sessions.restore_current_session(restored_session_id, started_at=restored_started_at)
         except Exception:
             return
 
@@ -697,9 +763,19 @@ class AutoTraderEngine:
         locked_profit = float(active["amount"]) * (self.settings.profit_lock_retain_pct / 100) if active else 0
         giveback = max(0, net - locked_profit) if active else 0
         block_new = bool(active and net <= locked_profit)
-        if rotation_enabled and self.settings.paper_trading:
+        daily_target = self._daily_profit_target()
+        daily_target_amount = float(daily_target.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 0)
+        daily_target_locked = bool(self.settings.paper_daily_target_lock_enabled and daily_target_amount > 0 and net >= daily_target_amount)
+        if daily_target_locked:
+            active = {"name": "daily_target", "pct": round(daily_target_amount / capital * 100, 2) if capital else 0, "amount": round(daily_target_amount, 2)}
+            locked_profit = max(locked_profit, daily_target_amount)
+            giveback = max(0, net - locked_profit)
+            block_new = True
+        if rotation_enabled and self.settings.paper_trading and not daily_target_locked:
             block_new = False
-        if rotation_enabled and active:
+        if daily_target_locked:
+            message = f"Daily INR {daily_target_amount:,.0f} paper target locked; no more paper entries today"
+        elif rotation_enabled and active:
             message = (
                 f"{active['name']} profit tier reached; session saves and restarts automatically"
                 if active["name"] == "primary"
@@ -723,6 +799,10 @@ class AutoTraderEngine:
             "sessionId": session_id,
             "sessionNumber": session_number,
             "sessionRotationEnabled": rotation_enabled,
+            "dailyTargetAmount": daily_target_amount,
+            "dailyTargetPct": daily_target.get("targetPct"),
+            "dayQuality": daily_target.get("quality"),
+            "dailyTargetLocked": daily_target_locked,
         }
 
     def _session_closed_trades(self) -> list[PaperTrade]:
@@ -732,33 +812,468 @@ class AutoTraderEngine:
     def _session_report(self) -> dict[str, Any]:
         return self.paper_sessions.build_report(self._session_closed_trades())
 
+    def _trade_timestamp(self, trade: PaperTrade) -> datetime | None:
+        raw = trade.opened_at or trade.exited_at
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _today_closed_trades(self) -> list[PaperTrade]:
+        today = datetime.now(IST).date()
+        trades: list[PaperTrade] = []
+        for trade in self.closed_paper:
+            timestamp = self._trade_timestamp(trade)
+            if timestamp and timestamp.astimezone(IST).date() == today:
+                trades.append(trade)
+        return trades
+
+    def _trade_bucket(self, trade: PaperTrade) -> str:
+        timestamp = self._trade_timestamp(trade)
+        if not timestamp:
+            return "UNKNOWN"
+        local_time = timestamp.astimezone(IST).time()
+        if local_time.hour == 9 and local_time.minute >= 15 or local_time.hour == 10 and local_time.minute <= 30:
+            return "OPEN_DRIVE"
+        if (local_time.hour == 11 and local_time.minute >= 30) or local_time.hour == 12 or (local_time.hour == 13 and local_time.minute <= 30):
+            return "MIDDAY_CHOP"
+        if (local_time.hour == 14 and local_time.minute >= 30) or (local_time.hour == 15 and local_time.minute <= 15):
+            return "CLOSING_MOMENTUM"
+        if (local_time.hour > 9 or (local_time.hour == 9 and local_time.minute >= 15)) and (local_time.hour < 15 or (local_time.hour == 15 and local_time.minute <= 30)):
+            return "NORMAL"
+        return "OUTSIDE_LIVE"
+
+    def _summarize_trades(self, trades: list[PaperTrade]) -> dict[str, Any]:
+        wins = [trade for trade in trades if trade.pnl > 0]
+        losses = [trade for trade in trades if trade.pnl < 0]
+        gross_profit = sum(float(trade.pnl) for trade in wins)
+        gross_loss = abs(sum(float(trade.pnl) for trade in losses))
+        net = gross_profit - gross_loss
+        return {
+            "paperTrades": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRate": round((len(wins) / len(trades)) * 100, 2) if trades else 0.0,
+            "grossProfit": round(gross_profit, 2),
+            "grossLoss": round(gross_loss, 2),
+            "netPnl": round(net, 2),
+            "profitFactor": round(gross_profit / gross_loss, 3) if gross_loss else round(gross_profit, 3),
+            "avgPnl": round(net / len(trades), 2) if trades else 0.0,
+            "maxDrawdown": round(self._max_drawdown([trade.pnl for trade in trades]), 2),
+        }
+
+    def _group_trade_summary(self, trades: list[PaperTrade], key_fn) -> dict[str, dict[str, Any]]:
+        groups: dict[str, list[PaperTrade]] = {}
+        for trade in trades:
+            groups.setdefault(str(key_fn(trade)), []).append(trade)
+        return {key: self._summarize_trades(items) for key, items in sorted(groups.items())}
+
+    def _best_summary_key(self, summaries: dict[str, dict[str, Any]]) -> str | None:
+        eligible = [
+            (key, value)
+            for key, value in summaries.items()
+            if int(value.get("paperTrades") or 0) >= 3
+        ]
+        if not eligible:
+            eligible = list(summaries.items())
+        if not eligible:
+            return None
+        return max(eligible, key=lambda item: (float(item[1].get("profitFactor") or 0), float(item[1].get("netPnl") or 0)))[0]
+
+    def _rolling_proof(self, limit: int | None = None) -> dict[str, Any]:
+        limit = int(limit or self.settings.paper_live_readiness_min_trades)
+        trades = list(self.closed_paper)[-limit:]
+        summary = self._summarize_trades(trades)
+        capital = float(self.settings.trading_capital_default or 0)
+        max_drawdown_pct = (float(summary.get("maxDrawdown") or 0) / capital * 100) if capital > 0 else 0.0
+        avg_win = (float(summary.get("grossProfit") or 0) / int(summary.get("wins") or 1)) if int(summary.get("wins") or 0) else 0.0
+        avg_loss = (float(summary.get("grossLoss") or 0) / int(summary.get("losses") or 1)) if int(summary.get("losses") or 0) else 0.0
+        return {
+            **summary,
+            "windowTrades": limit,
+            "sampleComplete": len(trades) >= limit,
+            "maxDrawdownPct": round(max_drawdown_pct, 2),
+            "avgWin": round(avg_win, 2),
+            "avgLoss": round(avg_loss, 2),
+            "expectancy": round((float(summary.get("netPnl") or 0) / len(trades)), 2) if trades else 0.0,
+        }
+
+    def _live_readiness(self, rolling: dict[str, Any]) -> dict[str, Any]:
+        checks = [
+            {
+                "name": "Sample size",
+                "passed": bool(rolling.get("sampleComplete")),
+                "value": rolling.get("paperTrades"),
+                "required": self.settings.paper_live_readiness_min_trades,
+            },
+            {
+                "name": "Profit factor",
+                "passed": float(rolling.get("profitFactor") or 0) >= float(self.settings.paper_live_readiness_min_profit_factor),
+                "value": rolling.get("profitFactor"),
+                "required": self.settings.paper_live_readiness_min_profit_factor,
+            },
+            {
+                "name": "Win rate",
+                "passed": float(rolling.get("winRate") or 0) >= float(self.settings.paper_live_readiness_min_win_rate_pct),
+                "value": rolling.get("winRate"),
+                "required": self.settings.paper_live_readiness_min_win_rate_pct,
+            },
+            {
+                "name": "Max drawdown",
+                "passed": float(rolling.get("maxDrawdownPct") or 100) <= float(self.settings.paper_live_readiness_max_drawdown_pct),
+                "value": rolling.get("maxDrawdownPct"),
+                "required": f"<= {self.settings.paper_live_readiness_max_drawdown_pct}",
+            },
+            {
+                "name": "Average win/loss",
+                "passed": float(rolling.get("avgWin") or 0) > float(rolling.get("avgLoss") or 0),
+                "value": {"avgWin": rolling.get("avgWin"), "avgLoss": rolling.get("avgLoss")},
+                "required": "avgWin > avgLoss",
+            },
+        ]
+        passed = all(bool(check["passed"]) for check in checks)
+        return {
+            "ready": passed,
+            "mode": "PAPER_ONLY" if not passed else "SMALL_SIZE_REVIEW_REQUIRED",
+            "checks": checks,
+            "message": "Not live ready. Keep live trading disabled until all rolling proof gates pass." if not passed else "Paper proof passed; only then consider tiny live pilot with manual approval.",
+        }
+
+    def _trade_postmortem(self, trade: PaperTrade) -> dict[str, Any]:
+        bucket = self._trade_bucket(trade)
+        pnl = float(trade.pnl or 0)
+        reason = trade.exit_reason or "unknown"
+        quality = "GOOD_WIN" if pnl > 0 else "CONTROLLED_LOSS" if abs(pnl) <= float(self.settings.paper_max_trade_loss_amount or 5000) else "OVERSIZED_LOSS"
+        findings: list[str] = []
+        actions: list[str] = []
+        if pnl < 0 and "momentum decay" in reason:
+            findings.append("Momentum failed after entry.")
+            actions.append("Require stronger breadth and premium velocity before next similar entry.")
+        if pnl < 0 and abs(pnl) > float(self.settings.paper_max_trade_loss_amount or 5000):
+            findings.append("Loss exceeded intended per-trade cap.")
+            actions.append("Reduce lots using stop-risk sizing before the next paper session.")
+        if bucket == "MIDDAY_CHOP":
+            findings.append("Trade occurred in chop-prone time window.")
+            actions.append("Keep midday normal trades blocked.")
+        if trade.side == "CALL":
+            findings.append("CALL side has recently underperformed in paper data.")
+            actions.append("Require bullish breadth and chart alignment for any CALL.")
+        if pnl > 0:
+            findings.append("Trade contributed positively to paper proof.")
+            actions.append("Preserve the same entry discipline; do not increase size after one win.")
+        return {
+            "id": trade.id,
+            "symbol": trade.symbol,
+            "side": trade.side,
+            "bucket": bucket,
+            "pnl": round(pnl, 2),
+            "exitReason": reason,
+            "quality": quality,
+            "findings": findings or ["No special issue detected."],
+            "nextActions": actions or ["Continue monitoring under current rules."],
+        }
+
+    def _breadth_readiness(self) -> dict[str, Any]:
+        snapshot = self._latest_market_snapshot or {}
+        count = int(snapshot.get("count") or 0)
+        required = int(self.settings.market_breadth_recommended_count)
+        return {
+            "available": bool(snapshot.get("available")),
+            "count": count,
+            "recommendedCount": required,
+            "sufficient": count >= required,
+            "breadth": snapshot.get("breadth") or {},
+            "message": "Breadth coverage is institutional-grade." if count >= required else "Add more NIFTY/BankNifty/sector instruments; current breadth coverage is too small for full confidence.",
+        }
+
+    def _institutional_profile_recommendations(
+        self,
+        by_bucket: dict[str, dict[str, Any]],
+        by_symbol: dict[str, dict[str, Any]],
+        by_side: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        best_bucket = self._best_summary_key(by_bucket)
+        best_symbol = self._best_summary_key(by_symbol)
+        best_side = self._best_summary_key(by_side)
+        return {
+            "recommendedBaseProfile": "realistic_aggressive",
+            "why": [
+                "The target is 10% on 5L capital, so the system needs aggressive paper allocation only during proven windows.",
+                "Today only the strongest directional runner window produced target-sized profits; broad CALL scalping was negative.",
+                "Use safe gates in weak windows and size only when session/bias evidence agrees.",
+            ],
+            "bestObservedBucket": best_bucket,
+            "bestObservedSymbol": best_symbol,
+            "bestObservedSide": best_side,
+            "timeWindowSettings": {
+                "OPEN_DRIVE": {
+                    "windowIst": "09:15-10:30",
+                    "profile": "safe_beginner",
+                    "permission": "A_PLUS_ONLY",
+                    "allocationPctMultiplier": 0.45,
+                    "minEntryTqs": 88,
+                    "minRunnerScore": 92,
+                    "maxHoldSeconds": 90,
+                    "note": "Today open-drive overtraded and lost heavily; trade only A+ direction-aligned runners.",
+                },
+                "MIDDAY_CHOP": {
+                    "windowIst": "11:30-13:30",
+                    "profile": "safe_beginner",
+                    "permission": "NO_NORMAL_TRADES",
+                    "allocationPctMultiplier": 0.0,
+                    "minEntryTqs": 90,
+                    "minRunnerScore": 94,
+                    "maxHoldSeconds": 60,
+                    "note": "Pause normal entries; allow only exceptional runners if future code enables bypass.",
+                },
+                "NORMAL": {
+                    "windowIst": "10:30-11:30 and 13:30-14:30",
+                    "profile": "balanced_pro",
+                    "permission": "SELECTIVE",
+                    "allocationPctMultiplier": 0.6,
+                    "minEntryTqs": 84,
+                    "minRunnerScore": 90,
+                    "maxHoldSeconds": 120,
+                    "note": "Normal window was below breakeven today; reduce frequency and wait for side confirmation.",
+                },
+                "CLOSING_MOMENTUM": {
+                    "windowIst": "14:30-15:15",
+                    "profile": "realistic_aggressive",
+                    "permission": "AGGRESSIVE_IF_ELITE_RUNNER",
+                    "allocationPctMultiplier": 1.0,
+                    "minEntryTqs": 82,
+                    "minRunnerScore": 86,
+                    "maxHoldSeconds": 240,
+                    "note": "Best observed window today; allow aggressive paper runners only while daily risk/target guard is clear.",
+                },
+            },
+            "bestTiming": {
+                "primaryWindowIst": "14:30-15:15",
+                "primaryBucket": "CLOSING_MOMENTUM",
+                "primaryProfile": "realistic_aggressive",
+                "primarySetup": "Elite SENSEX PUT explosive runner",
+                "avoidWindowsIst": ["11:30-13:30 unless elite runner", "opening drive until paper data improves"],
+                "rule": "Be aggressive only in the best observed window and only when runner is elite; otherwise protect capital.",
+            },
+        }
+
+    def _day_aggregate_from_trades(self) -> dict[str, Any]:
+        trades = self._today_closed_trades()
+        summary = self._summarize_trades(trades)
+        session_ids = {trade.paper_session_id for trade in trades if trade.paper_session_id}
+        return {
+            "tradingDay": datetime.now(IST).date().isoformat(),
+            "sessionsCompleted": len(self.paper_sessions.completed_today()),
+            "sessionsIncludingCurrent": max(1, len(session_ids) + (0 if self.paper_sessions.current_id() in session_ids else 1)),
+            "paperTrades": summary["paperTrades"],
+            "wins": summary["wins"],
+            "losses": summary["losses"],
+            "grossProfit": summary["grossProfit"],
+            "grossLoss": summary["grossLoss"],
+            "netPnl": summary["netPnl"],
+            "profitFactor": summary["profitFactor"],
+        }
+
+    def _paper_sessions_status(self) -> dict[str, Any]:
+        payload = self.paper_sessions.status_payload(self._session_report())
+        payload["dayAggregate"] = self._day_aggregate_from_trades()
+        payload["singleDailySession"] = self.settings.paper_single_daily_session
+        payload["targetLockEnabled"] = self.settings.paper_daily_target_lock_enabled
+        return payload
+
     def daily_report(self) -> dict[str, Any]:
         session_report = self._session_report()
-        day_aggregate = self.paper_sessions.day_aggregate()
-        trades = self._session_closed_trades()
+        day_aggregate = self._day_aggregate_from_trades()
+        trades = self._today_closed_trades()
+        day_report = self._summarize_trades(trades)
         losses = [trade for trade in trades if trade.pnl < 0]
-        max_drawdown = self._max_drawdown([trade.pnl for trade in trades])
         return {
             "totalSignals": len(self.lifecycle_events),
-            "paperTrades": session_report.get("paperTrades", 0),
+            "paperTrades": day_report["paperTrades"],
             "openTrades": len(self.open_paper),
-            "wins": session_report.get("wins", 0),
-            "losses": session_report.get("losses", 0),
-            "winRate": session_report.get("winRate", 0),
-            "grossProfit": session_report.get("grossProfit", 0),
-            "grossLoss": session_report.get("grossLoss", 0),
-            "profitFactor": session_report.get("profitFactor", 0),
-            "netPnl": session_report.get("netPnl", 0),
-            "maxDrawdown": round(max_drawdown, 2),
+            "wins": day_report["wins"],
+            "losses": day_report["losses"],
+            "winRate": day_report["winRate"],
+            "grossProfit": day_report["grossProfit"],
+            "grossLoss": day_report["grossLoss"],
+            "profitFactor": day_report["profitFactor"],
+            "netPnl": day_report["netPnl"],
+            "maxDrawdown": day_report["maxDrawdown"],
             "sessionId": session_report.get("sessionId"),
             "sessionNumber": session_report.get("sessionNumber"),
+            "currentSession": session_report,
             "dayAggregate": day_aggregate,
             "completedSessionsToday": len(self.paper_sessions.completed_today()),
             "reasonForLosses": self._loss_reasons(losses),
         }
 
+    def _price_maps_from_snapshots(self, snapshots: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        price_by_id: dict[str, dict[str, Any]] = {}
+        price_by_instrument: dict[str, dict[str, Any]] = {}
+        for snapshot in snapshots.values():
+            for candidate in snapshot.get("suggestedTrades") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+            for candidate in snapshot.get("explosiveRunnerWatchlist") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+            for candidate in snapshot.get("paperPriceWatch") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+        return price_by_id, price_by_instrument
+
+    def _open_marked_pnl(self, snapshots: dict[str, Any]) -> tuple[float, dict[str, float]]:
+        price_by_id, price_by_instrument = self._price_maps_from_snapshots(snapshots)
+        marks: dict[str, float] = {}
+        total = 0.0
+        for trade_id, trade in self.open_paper.items():
+            candidate = price_by_id.get(trade_id) or price_by_instrument.get(str(trade.instrument_key or ""))
+            current = float((candidate or {}).get("lastPremium") or (candidate or {}).get("premium") or trade.entry_price or 0)
+            if current <= 0:
+                current = trade.entry_price
+            charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
+            pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+            marks[trade_id] = round(pnl, 2)
+            total += pnl
+        return round(total, 2), marks
+
+    def _paper_day_quality(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
+        day_summary = self._summarize_trades(self._today_closed_trades())
+        trades = int(day_summary.get("paperTrades") or 0)
+        net = float(day_summary.get("netPnl") or 0)
+        profit_factor = float(day_summary.get("profitFactor") or 0)
+        win_rate = float(day_summary.get("winRate") or 0)
+        scores: list[float] = []
+        runner_scores: list[float] = []
+        for snapshot in (snapshots or {}).values():
+            for candidate in (snapshot.get("suggestedTrades") or []) + (snapshot.get("explosiveRunnerWatchlist") or []) + (snapshot.get("paperPriceWatch") or []):
+                score = float(candidate.get("tqs") or candidate.get("score") or 0)
+                if score > 0:
+                    scores.append(score)
+                runner = candidate.get("runnerSignal") or candidate
+                runner_score = float(runner.get("score") or 0)
+                if runner_score > 0:
+                    runner_scores.append(runner_score)
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        best_score = max(scores or [0.0])
+        best_runner_score = max(runner_scores or [0.0])
+
+        quality = "WORST"
+        reason = "No proven edge yet; use 5% lock and only perfect setups."
+        if trades >= 5:
+            if net > 0 and profit_factor >= 1.5 and win_rate >= 40:
+                quality = "GOOD"
+                reason = "Positive paper day with profit factor above 1.5; try 10% target."
+            elif (net >= 0 and profit_factor >= 1.0) or win_rate >= 45:
+                quality = "MEDIUM"
+                reason = "Mixed but workable paper day; use 8% target."
+            else:
+                quality = "WORST"
+                reason = "Weak paper day or drawdown active; lock quickly at 5% if recovered."
+        elif best_runner_score >= 92 and avg_score >= 82:
+            quality = "GOOD"
+            reason = "Live signal quality is strong: runner score >= 92 and average score >= 82."
+        elif best_runner_score >= 88 or best_score >= 86:
+            quality = "MEDIUM"
+            reason = "Live signal quality is moderate; use 8% target."
+
+        return {
+            "quality": quality,
+            "reason": reason,
+            "metrics": {
+                "paperTrades": trades,
+                "netPnl": round(net, 2),
+                "profitFactor": profit_factor,
+                "winRate": win_rate,
+                "avgSignalScore": round(avg_score, 2),
+                "bestSignalScore": round(best_score, 2),
+                "bestRunnerScore": round(best_runner_score, 2),
+            },
+        }
+
+    def _daily_profit_target(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
+        quality = self._paper_day_quality(snapshots)
+        capital = float(self.settings.trading_capital_default or 0)
+        quality_key = str(quality.get("quality") or "WORST")
+        pct_by_quality = {
+            "GOOD": float(self.settings.paper_daily_profit_target_good_pct),
+            "MEDIUM": float(self.settings.paper_daily_profit_target_medium_pct),
+            "WORST": float(self.settings.paper_daily_profit_target_worst_pct),
+        }
+        pct = pct_by_quality.get(quality_key, float(self.settings.paper_daily_profit_target_worst_pct))
+        amount = capital * pct / 100 if capital > 0 else float(self.settings.paper_daily_profit_target_amount or 0)
+        return {
+            "quality": quality_key,
+            "reason": quality.get("reason"),
+            "targetPct": round(pct, 2),
+            "targetAmount": round(amount, 2),
+            "capital": capital,
+            "metrics": quality.get("metrics") or {},
+            "tiers": {
+                "worstPct": float(self.settings.paper_daily_profit_target_worst_pct),
+                "mediumPct": float(self.settings.paper_daily_profit_target_medium_pct),
+                "goodPct": float(self.settings.paper_daily_profit_target_good_pct),
+            },
+        }
+
+    def _target_lock_status(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
+        target_info = self._daily_profit_target(snapshots)
+        target = float(target_info.get("targetAmount") or 0)
+        day_net = float(self._day_aggregate_from_trades().get("netPnl") or 0)
+        open_marked_pnl, marks = self._open_marked_pnl(snapshots or {}) if snapshots else (0.0, {})
+        projected = day_net + open_marked_pnl
+        enabled = bool(self.settings.paper_daily_target_lock_enabled and target > 0)
+        return {
+            "enabled": enabled,
+            "targetAmount": target,
+            "targetPct": target_info.get("targetPct"),
+            "dayQuality": target_info.get("quality"),
+            "qualityReason": target_info.get("reason"),
+            "qualityMetrics": target_info.get("metrics"),
+            "targetTiers": target_info.get("tiers"),
+            "closedNetPnl": round(day_net, 2),
+            "openMarkedPnl": round(open_marked_pnl, 2),
+            "projectedNetPnl": round(projected, 2),
+            "remainingToTarget": round(target - projected, 2),
+            "locked": bool(enabled and day_net >= target),
+            "projectedLocked": bool(enabled and projected >= target),
+            "openMarks": marks,
+            "mode": "single_daily_session_target_lock" if self.settings.paper_single_daily_session else "session_rotation",
+        }
+
+    def _maybe_lock_daily_profit_target(self, snapshots: dict[str, Any]) -> dict[str, Any]:
+        status = self._target_lock_status(snapshots)
+        if not status.get("enabled") or not status.get("projectedLocked") or not self.open_paper:
+            return {**status, "lockedTrades": []}
+        price_by_id, price_by_instrument = self._price_maps_from_snapshots(snapshots)
+        locked: list[dict[str, Any]] = []
+        reason = f"daily paper target lock INR {float(status.get('targetAmount') or 0):,.0f}"
+        for trade_id, trade in list(self.open_paper.items()):
+            candidate = price_by_id.get(trade_id) or price_by_instrument.get(str(trade.instrument_key or ""))
+            current = float((candidate or {}).get("lastPremium") or (candidate or {}).get("premium") or trade.entry_price or 0)
+            if current <= 0:
+                current = trade.entry_price
+            trade.status = "EXITED"
+            trade.exit_price = current
+            trade.exit_reason = reason
+            trade.exited_at = datetime.now(timezone.utc).isoformat()
+            charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
+            trade.charges_estimate = charges
+            trade.pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+            trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges, "targetLock": True}))
+            self.closed_paper.append(trade)
+            AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
+            if trade.instrument_key:
+                AutoTraderEngine._shared_recent_signal_times[f"instrument:{trade.instrument_key}"] = monotonic()
+            self.lifecycle_events.extend(trade.lifecycle[-1:])
+            del self.open_paper[trade_id]
+            locked.append(trade.to_dict())
+        if locked:
+            self._persist_paper_trades_file()
+        refreshed = self._target_lock_status(snapshots)
+        return {**refreshed, "lockedTrades": locked, "reason": reason}
+
     def _maybe_rotate_paper_session(self, snapshots: dict[str, Any], session_adj: dict[str, Any], trading_capital: float) -> dict[str, Any] | None:
-        if not self.settings.paper_session_rotation_enabled:
+        if self.settings.paper_single_daily_session or not self.settings.paper_session_rotation_enabled:
             return None
         session_report = self._session_report()
         decision = self.paper_sessions.evaluate_rotation(session_report, session_adj)
@@ -897,12 +1412,20 @@ class AutoTraderEngine:
             confidence = str(runner.get("confidence") or "").upper()
             if confidence != "HIGH":
                 return False, f"runner confidence {confidence or 'LOW'}; HIGH confidence only"
+            if not runner.get("eliteRunner"):
+                return False, "explosive runner is not elite quality"
             score = float(runner.get("score") or candidate.get("tqs") or 0)
             min_score = float(self.settings.paper_high_confidence_min_runner_score)
             if score < min_score:
                 return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
             if not runner.get("momentumAligned"):
                 return False, "high-confidence runners require momentum alignment"
+            chart_bias = str(candidate.get("chartBias") or "")
+            side = str(candidate.get("side") or "")
+            if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
+                return False, f"runner chart trend conflict: {chart_bias} bias vs {side} trade"
+            if chart_bias == "WAIT":
+                return False, "runner chart analysis says wait"
             return True, ""
         min_tqs = int(self.settings.paper_high_confidence_min_tqs)
         tqs = int(candidate.get("tqs") or 0)
@@ -959,7 +1482,11 @@ class AutoTraderEngine:
         if runner.get("candidate") is False and not momentum_runner:
             return False
         score = float(runner.get("score") or candidate.get("tqs") or 0)
-        if score < self._runner_min_score(runner):
+        if not runner.get("eliteRunner"):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        if score < max(self._runner_min_score(runner), float(self.settings.explosive_runner_elite_min_score), float(self.settings.paper_high_confidence_min_runner_score)):
             return False
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         if premium <= 0:
@@ -977,6 +1504,162 @@ class AutoTraderEngine:
         if not session_adj.get("blockNewPaperTrades"):
             return True
         return False
+
+    def _side_performance_gate(self, candidate: dict[str, Any]) -> str | None:
+        trades = self._today_closed_trades()
+        if len(trades) < 10:
+            return None
+        by_side = self._group_trade_summary(trades, lambda trade: trade.side or "UNKNOWN")
+        side = str(candidate.get("side") or "")
+        side_summary = by_side.get(side)
+        best_side = self._best_summary_key(by_side)
+        best_summary = by_side.get(best_side or "")
+        if not side_summary or not best_summary or side == best_side:
+            return None
+        side_pf = float(side_summary.get("profitFactor") or 0)
+        side_net = float(side_summary.get("netPnl") or 0)
+        best_pf = float(best_summary.get("profitFactor") or 0)
+        if side_net < 0 and side_pf < 1 and best_pf >= 1.5:
+            return f"{side} side underperforming today; best observed side is {best_side} with PF {best_pf:.2f}"
+        return None
+
+    def _entry_correlation_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> str | None:
+        side = str(candidate.get("side") or "").upper()
+        bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        if int(self.settings.paper_max_open_trades) > 0 and len(self.open_paper) >= int(self.settings.paper_max_open_trades):
+            return f"max open paper trades reached ({self.settings.paper_max_open_trades}); avoid correlated stacking"
+        same_side_open = [trade for trade in self.open_paper.values() if str(trade.side or "").upper() == side]
+        if int(self.settings.paper_max_open_same_side_trades) > 0 and len(same_side_open) >= int(self.settings.paper_max_open_same_side_trades):
+            return f"{side} side already has an open paper trade"
+        now = datetime.now(timezone.utc)
+        entry_cooldown = max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
+        loss_cooldown = max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
+        for trade in reversed(list(self.closed_paper)[-50:]):
+            if str(trade.side or "").upper() != side:
+                continue
+            if self._trade_bucket(trade) != bucket:
+                continue
+            timestamp = None
+            for raw in [trade.exited_at, trade.opened_at]:
+                if raw:
+                    try:
+                        timestamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                        break
+                    except ValueError:
+                        continue
+            if not timestamp:
+                continue
+            age_seconds = (now - timestamp.astimezone(timezone.utc)).total_seconds()
+            if trade.pnl < 0 and age_seconds <= loss_cooldown:
+                return f"{side} side loss cooldown active in {bucket} after {trade.symbol} loss ({int((loss_cooldown - age_seconds) // 60)}m left)"
+            if age_seconds <= entry_cooldown:
+                return f"{side} side same-window entry cooldown active after {trade.symbol} trade ({int((entry_cooldown - age_seconds) // 60)}m left)"
+        return None
+
+    def _breadth_confirmation(self, side: str) -> dict[str, Any]:
+        snapshot = self._latest_market_snapshot or {}
+        breadth = snapshot.get("breadth") or {}
+        count = int(snapshot.get("count") or 0)
+        score = float(breadth.get("score") or 50.0)
+        bias = str(breadth.get("bias") or "NEUTRAL")
+        enabled = bool(self.settings.paper_breadth_filter_enabled)
+        enough_data = count >= int(self.settings.paper_breadth_min_count)
+        side = str(side or "").upper()
+        aligned = True
+        reason = "market breadth neutral or unavailable"
+        if enabled and enough_data:
+            bullish = score >= float(self.settings.paper_breadth_bullish_threshold)
+            bearish = score <= float(self.settings.paper_breadth_bearish_threshold)
+            if side == "CALL":
+                aligned = bullish
+                reason = "CALL aligned with bullish breadth" if aligned else f"CALL rejected: breadth not bullish ({score:.1f})"
+            elif side == "PUT":
+                aligned = bearish
+                reason = "PUT aligned with bearish breadth" if aligned else f"PUT rejected: breadth not bearish ({score:.1f})"
+        return {
+            "available": bool(snapshot.get("available")) and enough_data,
+            "enabled": enabled,
+            "aligned": aligned,
+            "score": round(score, 2),
+            "bias": bias,
+            "count": count,
+            "reason": reason,
+            "source": snapshot.get("source") or "market_snapshot_cache",
+        }
+
+    def _ai_trade_quality_prediction(
+        self,
+        candidate: dict[str, Any],
+        *,
+        premium: float,
+        required_move: float,
+        session_adj: dict[str, Any],
+        market_phase: str | None,
+    ) -> dict[str, Any]:
+        runner = candidate.get("runnerSignal") or {}
+        metrics = runner.get("metrics") or {}
+        side = str(candidate.get("side") or "")
+        chart_bias = str(candidate.get("chartBias") or "")
+        tqs = float(candidate.get("tqs") or runner.get("score") or 0)
+        runner_score = float(runner.get("score") or 0)
+        spread_quality = float(metrics.get("spreadQuality") or 0)
+        breakout = float(metrics.get("breakoutVelocity") or 0)
+        delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
+        premium_velocity = float(metrics.get("premiumVelocity") or 0)
+        volume_state = runner.get("volumeState") or {}
+        effective_volume = float(candidate.get("effectiveVolume") or volume_state.get("effectiveVolume") or metrics.get("volume") or 0)
+        session_bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        is_runner = candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+        breadth = self._breadth_confirmation(side)
+
+        score = 45.0
+        score += max(0.0, min(18.0, (tqs - 70) * 0.6))
+        score += max(0.0, min(20.0, (runner_score - 80) * 0.8))
+        score += 14.0 if runner.get("eliteRunner") else 0.0
+        score += 8.0 if runner.get("momentumAligned") else -8.0 if is_runner else 0.0
+        score += 8.0 if spread_quality >= 80 else -10.0 if spread_quality and spread_quality < 70 else 0.0
+        score += 7.0 if breakout >= 70 else 0.0
+        score += 7.0 if delta_velocity >= 55 else 0.0
+        score += 5.0 if premium_velocity >= float(self.settings.explosive_runner_momentum_premium_velocity_pct) else 0.0
+        score += 5.0 if effective_volume > 0 else -8.0
+        score += 6.0 if session_bucket == "CLOSING_MOMENTUM" else -7.0 if session_bucket == "MIDDAY_CHOP" else 0.0
+        if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
+            score += 8.0 if chart_bias == side else -25.0
+        elif chart_bias == "WAIT":
+            score -= 15.0
+        if candidate.get("chopBlocked") and not is_runner:
+            score -= 18.0
+        if breadth.get("available"):
+            score += 10.0 if breadth.get("aligned") else -18.0
+
+        expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
+        if is_runner:
+            expected_move = max(expected_move, float(self.settings.paper_runner_target_premium_pct) * premium / 100)
+        expected_drawdown = max(required_move, float(self.settings.paper_stop_points))
+        risk_reward = expected_move / expected_drawdown if expected_drawdown > 0 else 0.0
+        win_probability = max(5.0, min(90.0, score))
+        confidence = max(5.0, min(95.0, (win_probability * 0.65) + min(100.0, risk_reward * 25) * 0.35))
+        passed = (
+            win_probability >= float(self.settings.paper_ai_min_win_probability_pct)
+            and risk_reward >= float(self.settings.paper_ai_min_risk_reward)
+            and confidence >= float(self.settings.paper_ai_min_confidence_pct)
+        )
+        return {
+            "passed": passed,
+            "winProbabilityPct": round(win_probability, 2),
+            "expectedMovePoints": round(expected_move, 2),
+            "expectedDrawdownPoints": round(expected_drawdown, 2),
+            "riskReward": round(risk_reward, 2),
+            "confidencePct": round(confidence, 2),
+            "minimums": {
+                "winProbabilityPct": self.settings.paper_ai_min_win_probability_pct,
+                "riskReward": self.settings.paper_ai_min_risk_reward,
+                "confidencePct": self.settings.paper_ai_min_confidence_pct,
+            },
+            "sessionBucket": session_bucket,
+            "breadth": breadth,
+            "model": "heuristic_trade_quality_predictor_v1",
+        }
 
     def _pre_trade_quality(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None, market_phase: str | None = None) -> dict[str, Any]:
         session_adj = session_adj or self._paper_session_settings({})
@@ -998,9 +1681,24 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner:
             reasons.append("chop filter blocked")
+        correlation_gate = self._entry_correlation_gate(candidate, session_adj)
+        if correlation_gate:
+            reasons.append(correlation_gate)
+        side_gate = self._side_performance_gate(candidate)
+        if side_gate:
+            reasons.append(side_gate)
+        breadth = self._breadth_confirmation(side)
+        if breadth.get("available") and not breadth.get("aligned"):
+            reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok:
             reasons.append(high_conf_reason)
+        ai_prediction = self._ai_trade_quality_prediction(candidate, premium=premium, required_move=required_move, session_adj=session_adj, market_phase=market_phase)
+        if not ai_prediction["passed"]:
+            reasons.append(
+                "AI quality predictor rejected: "
+                f"win {ai_prediction['winProbabilityPct']}%, RR {ai_prediction['riskReward']}, confidence {ai_prediction['confidencePct']}%"
+            )
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
             if candidate.get("effectiveVolume", 0) <= 0 and not volume_state.get("volumeAvailable"):
@@ -1032,6 +1730,7 @@ class AutoTraderEngine:
             "chargesEstimate": round(charges, 2),
             "chargesPerUnit": round(charges_per_unit, 4),
             "minimumRequiredMove": round(required_move, 2),
+            "aiPrediction": ai_prediction,
         }
 
     def _open_paper_trade(
@@ -1050,9 +1749,16 @@ class AutoTraderEngine:
             return None
         if self._recent_signal_active(trade_id):
             return None
+        instrument_key = str(candidate.get("instrumentKey") or "")
+        instrument_signal_id = f"instrument:{instrument_key}" if instrument_key else ""
+        if instrument_key and any(str(trade.instrument_key or "") == instrument_key for trade in self.open_paper.values()):
+            return None
+        if instrument_signal_id and self._recent_signal_active(instrument_signal_id):
+            return None
         premium = float(candidate.get("lastPremium") or 0)
         lot_size = max(1, int(candidate.get("lotSize") or 1))
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
+        risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0)
@@ -1065,14 +1771,25 @@ class AutoTraderEngine:
             min_allocation = capital * max(0.0, min_allocation_pct) / 100 if capital > 0 else 0.0
             usable_capital = min(max(0.0, available_capital), target_allocation)
             affordable_lots = int(usable_capital // (premium * lot_size))
-            quantity = min(desired_quantity, affordable_lots * lot_size)
-            if quantity * premium < min_allocation:
+            max_trade_loss_amount = float(self.settings.paper_max_trade_loss_amount or 0)
+            max_trade_loss_pct = float(self.settings.paper_max_trade_loss_pct or 0)
+            pct_risk_amount = capital * max_trade_loss_pct / 100 if capital > 0 and max_trade_loss_pct > 0 else 0
+            risk_budget = min([value for value in [max_trade_loss_amount, pct_risk_amount] if value > 0], default=0)
+            per_unit_risk = max(
+                0.05,
+                float(risk_plan["stopPoints"]) + float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0),
+            )
+            risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else affordable_lots
+            quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
+            if risk_budget <= 0 and quantity * premium < min_allocation:
                 return None
         else:
             quantity = desired_quantity
         if quantity < lot_size:
             return None
-        risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
+        min_viable_lots = 3
+        if quantity < lot_size * min_viable_lots:
+            return None
         charges = self._charges_estimate(premium, premium, max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
@@ -1080,7 +1797,7 @@ class AutoTraderEngine:
             side=str(candidate.get("side")),
             strike=int(candidate.get("strike") or 0),
             expiry=str(candidate.get("expiry")),
-            instrument_key=candidate.get("instrumentKey"),
+            instrument_key=instrument_key or candidate.get("instrumentKey"),
             entry_price=premium,
             quantity=max(1, quantity),
             entry_tqs=int(candidate.get("tqs") or 0),
@@ -1135,8 +1852,11 @@ class AutoTraderEngine:
             breakeven_shift = float(trade.breakeven_shift_points or self.settings.paper_breakeven_shift_points)
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology, session_max_hold)
             style = str(profile.get("executionStyle") or "GENERIC")
-            if style == "RUNNER_BREAKOUT":
-                target_points = max(target_points, self.settings.paper_target_points * 1.2)
+            is_runner = trade.strategy_type == "EXPLOSIVE_RUNNER"
+            if is_runner or style == "RUNNER_BREAKOUT":
+                target_points = max(target_points, self.settings.paper_target_points * 1.5)
+                max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
+                breakeven_shift = max(breakeven_shift, target_points * 0.45)
             elif style == "HIGH_WIN_SCALP":
                 target_points = max(target_points, self.settings.paper_target_points)
             if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
@@ -1145,9 +1865,18 @@ class AutoTraderEngine:
             if not trade.partial_exit_taken and trade.best_price >= trade.entry_price + partial_exit_at:
                 trade.partial_exit_taken = True
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
-            if current >= trade.entry_price + target_points:
+            runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
+            if is_runner and trade.best_price >= trade.entry_price + target_points * 0.60 and current <= trade.best_price - float(trade.trail_points or target_points * 0.30):
+                reason = "elite runner trailing max-points lock"
+            elif is_runner and age >= max_hold_seconds:
+                min_lock_profit = target_points * 0.35
+                if current >= trade.entry_price + min_lock_profit:
+                    reason = "elite runner max hold profit lock"
+                else:
+                    reason = "runner time stop"
+            elif not is_runner and current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
-            elif trade.breakeven_armed and current <= trade.entry_price:
+            elif trade.breakeven_armed and current <= trade.entry_price + 2.0 and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
                 reason = psych_exit_reason or "momentum decay or delta reversal stop"
@@ -1166,6 +1895,8 @@ class AutoTraderEngine:
                 trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges}))
                 self.closed_paper.append(trade)
                 AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
+                if trade.instrument_key:
+                    AutoTraderEngine._shared_recent_signal_times[f"instrument:{trade.instrument_key}"] = monotonic()
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
                 del self.open_paper[trade_id]
                 exits.append(trade.to_dict())
@@ -1264,7 +1995,7 @@ class AutoTraderEngine:
         session_adj = session_adj or {}
         capital = float(trading_capital or self.settings.trading_capital_default or 0)
         session_report = self._session_report()
-        day_aggregate = self.paper_sessions.day_aggregate()
+        day_aggregate = self._day_aggregate_from_trades()
         session_net = float(session_report.get("netPnl") or 0)
         day_net = float(day_aggregate.get("netPnl") or 0)
         consecutive_losses = int(session_report.get("consecutiveLosses") or 0)
@@ -1289,6 +2020,10 @@ class AutoTraderEngine:
                 reasons.append(f"paper session loss {session_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
         if not rotation_enabled and consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
+        daily_target = self._daily_profit_target()
+        daily_profit_target_amount = float(daily_target.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 0)
+        if daily_profit_target_amount > 0 and day_net >= daily_profit_target_amount:
+            reasons.append(f"paper daily profit target INR {daily_profit_target_amount:,.0f} reached")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
         session_profit_pct = float(session_report.get("profitPct") or 0)
         if not rotation_enabled and session_profit_pct >= profit_target_pct:
@@ -1307,6 +2042,9 @@ class AutoTraderEngine:
             "consecutiveLosses": consecutive_losses,
             "sessionProfitPct": round(session_profit_pct, 2),
             "profitTargetPct": profit_target_pct,
+            "dailyProfitTargetAmount": daily_profit_target_amount,
+            "dailyProfitTargetPct": daily_target.get("targetPct"),
+            "dayQuality": daily_target.get("quality"),
             "maxDailyLossPct": max_loss_pct,
             "maxDailyLossAmount": max_loss_amount,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
@@ -1322,18 +2060,122 @@ class AutoTraderEngine:
         adjusted_stop = float(stop_points)
         reason = None
         if permission == "BLOCK_NEW_TRADES" or state == "HALT_AND_REVIEW":
-            adjusted_stop = min(adjusted_stop, max(1.0, stop_points * 0.45))
-            max_hold = min(max_hold, 60)
+            adjusted_stop = min(adjusted_stop, max(1.5, stop_points * 0.60))
+            max_hold = min(max_hold, 90)
             reason = "psychology halt defensive stop"
         elif permission == "WAIT" or state == "DEFENSIVE":
-            adjusted_stop = min(adjusted_stop, max(1.25, stop_points * 0.6))
-            max_hold = min(max_hold, 90)
+            adjusted_stop = min(adjusted_stop, max(2.0, stop_points * 0.75))
+            max_hold = min(max_hold, 150)
             reason = "psychology defensive stop"
         elif state == "CAUTIOUS":
-            adjusted_stop = min(adjusted_stop, max(1.5, stop_points * 0.75))
-            max_hold = min(max_hold, 150)
+            adjusted_stop = min(adjusted_stop, max(2.5, stop_points * 0.85))
+            # CAUTIOUS: tighten stop slightly but preserve full hold time so targets can be reached
             reason = "psychology cautious stop"
         return round(adjusted_stop, 2), max_hold, reason
+
+    def _ai_psychological_coach(
+        self,
+        *,
+        state: str,
+        permission: str,
+        risk_halt: dict[str, Any],
+        session_adj: dict[str, Any],
+        emotional_risks: list[str],
+        behavioral_findings: list[str],
+        day_summary: dict[str, Any],
+        recent_losses: list[PaperTrade],
+        recent_wins: list[PaperTrade],
+    ) -> dict[str, Any]:
+        performance = self.performance_analysis()
+        best = performance.get("bestObserved") or {}
+        target = performance.get("target") or {}
+        session_bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        net_pnl = float(day_summary.get("netPnl") or 0)
+        profit_factor = float(day_summary.get("profitFactor") or 0)
+        win_rate = float(day_summary.get("winRate") or 0)
+        risks = sorted(set(emotional_risks))
+
+        if risk_halt.get("blocked"):
+            mode = "HALT_COACH"
+            urgency = "HIGH"
+            next_action = "No new paper entries. Review losses and wait for the next trading day or manual reset."
+            cooldown_minutes = 60
+        elif permission == "WAIT":
+            mode = "RESET_FOCUS"
+            urgency = "MEDIUM"
+            next_action = "Wait for a clean A+ setup; do not increase size to recover."
+            cooldown_minutes = 20
+        elif profit_factor < 1 and int(day_summary.get("paperTrades") or 0) >= 10:
+            mode = "SELECTIVITY_COACH"
+            urgency = "MEDIUM"
+            next_action = "Trade only the best observed bucket/side until profit factor recovers above 1."
+            cooldown_minutes = 15
+        else:
+            mode = "EXECUTION_COACH"
+            urgency = "LOW"
+            next_action = "Stay process-focused and take only checklist-passing setups."
+            cooldown_minutes = 5
+
+        best_bucket = best.get("bucket") or "not proven yet"
+        best_symbol = best.get("symbol") or "not proven yet"
+        best_side = best.get("side") or "not proven yet"
+        diagnosis = [
+            f"Current psychology state is {state}; trade permission is {permission}.",
+            f"Today's paper PF is {profit_factor:.2f}, win rate is {win_rate:.2f}%, net PnL is INR {net_pnl:,.0f}.",
+            f"Best observed paper edge today: {best_bucket} / {best_symbol} / {best_side}.",
+        ]
+        if risks:
+            diagnosis.append(f"Detected behavioral risks: {', '.join(risks)}.")
+        if target:
+            diagnosis.append(
+                f"Daily target is INR {float(target.get('dailyProfitAmount') or 0):,.0f}; remaining is INR {float(target.get('remainingToTarget') or 0):,.0f}."
+            )
+
+        intervention = [
+            "Pause for 90 seconds before every new paper entry.",
+            "Say the trade thesis out loud: direction, trigger, invalidation, and exit.",
+            "If the setup is not in the best observed bucket/side, reduce aggression or skip.",
+            "After any loss, wait for a fresh candle/snapshot confirmation before the next entry.",
+        ]
+        if recent_losses and not recent_wins:
+            intervention.insert(0, "Loss streak detected: do not take the next signal unless it passes every checklist item.")
+        if "overtrading" in risks:
+            intervention.append("Cap the next session to one open instrument at a time.")
+
+        return {
+            "mode": mode,
+            "urgency": urgency,
+            "sessionBucket": session_bucket,
+            "nextAction": next_action,
+            "cooldownMinutes": cooldown_minutes,
+            "diagnosis": diagnosis[:6],
+            "interventionScript": intervention[:8],
+            "preTradeChecklist": [
+                "Is this in the best observed window/side, or is there a clear reason to override?",
+                "Is chart bias aligned with option direction?",
+                "Is runner score/TQS above the current time-window threshold?",
+                "Is there no active daily loss/profit halt?",
+                "Is this not a duplicate instrument already traded in cooldown?",
+                "Can I accept the stop without revenge trading?",
+            ],
+            "breathingProtocol": "4-2-6 breathing for three cycles: inhale 4, hold 2, exhale 6 before pressing the trade.",
+            "journalPrompt": "Why this trade now? What condition proves me wrong? Did I follow the system or chase emotion?",
+            "antiRevengeRules": [
+                "No size increase after a loss.",
+                "No CALL trades when today's CALL bucket remains negative unless chart and tape both flip.",
+                "No trade outside the recommended time-window profile after risk halt.",
+            ],
+            "positiveReinforcement": "Your job is not to trade more; it is to protect 5L capital until the highest-quality paper edge appears.",
+            "profileGuidance": {
+                "baseProfile": (performance.get("institutionalAggressionProfiles") or {}).get("recommendedBaseProfile"),
+                "bestBucket": best_bucket,
+                "bestSymbol": best_symbol,
+                "bestSide": best_side,
+            },
+            "confidenceScore": max(0, min(100, int(100 - len(risks) * 15 - max(0, 1 - profit_factor) * 25))),
+            "source": "paper_performance_psychology_rules_v1",
+            "findingsUsed": behavioral_findings[:5],
+        }
 
     def _psychology_report(
         self,
@@ -1415,6 +2257,8 @@ class AutoTraderEngine:
         discipline_score -= 10 if open_count > 2 else 0
         discipline_score += 8 if duplicate_skips else 0
         discipline_score += 8 if paper_trades == 0 and total_signals > 20 else 0
+        if risk_halt.get("blocked"):
+            discipline_score = min(discipline_score, 45)
         discipline_score = max(0, min(100, discipline_score))
 
         if profit_pct >= daily_profit_stop_pct and not rotation_enabled:
@@ -1442,6 +2286,18 @@ class AutoTraderEngine:
             "state": state,
             "tradePermission": permission,
         })
+        day_summary = self._summarize_trades(self._today_closed_trades())
+        ai_coach = self._ai_psychological_coach(
+            state=state,
+            permission=permission,
+            risk_halt=risk_halt,
+            session_adj=session_adj,
+            emotional_risks=emotional_risks,
+            behavioral_findings=behavioral_findings,
+            day_summary=day_summary,
+            recent_losses=recent_losses,
+            recent_wins=recent_wins,
+        )
 
         return {
             "state": state,
@@ -1472,6 +2328,7 @@ class AutoTraderEngine:
                 "adjustedMaxHoldSeconds": adjusted_hold,
                 "reason": exit_reason,
             },
+            "aiCoach": ai_coach,
             "mantra": "Protect capital first. Trade only when chart, tape, and risk agree.",
         }
 
@@ -1530,11 +2387,23 @@ class AutoTraderEngine:
         delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
         costs_per_unit = float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0)
         # Low-premium options can lose too much if we use a fixed 7/10 point stop.
+        is_runner = candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+        if is_runner:
+            plan = runner.get("maxPointsPlan") or {}
+            target_pct = float(plan.get("targetPremiumPct") or profile.get("targetPremiumPct") or self.settings.paper_runner_target_premium_pct)
+            max_target_pct = float(self.settings.paper_runner_max_target_premium_pct)
+            target = max(target, premium * min(max_target_pct, max(target_pct, self.settings.paper_runner_target_premium_pct)) / 100, self.settings.paper_target_points * 1.5)
+            base_stop = max(base_stop, premium * float(plan.get("hardStopPct") or 10.0) / 100)
         premium_stop_cap_pct = 0.10 if runner_score >= 85 and breakout >= 65 and delta_velocity >= 45 else 0.08
         premium_capped_stop = max(costs_per_unit + 1.0, premium * premium_stop_cap_pct) if premium > 0 else base_stop
-        stop = min(base_stop, premium_capped_stop) if premium > 0 else base_stop
+        stop = min(base_stop, premium_capped_stop) if premium > 0 and not is_runner else base_stop
         stop = max(costs_per_unit + 0.75, stop)
-        trail = max(1.5, target * (0.45 if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" else 0.35))
+        if is_runner:
+            # Trail must be smaller than target so profit lock actually fires.
+            # Give back at most 30% of the target gain → lock in 70%.
+            trail = max(2.0, target * 0.30)
+        else:
+            trail = max(1.5, target * 0.35)
         return {
             "targetPoints": round(target, 2),
             "stopPoints": round(stop, 2),

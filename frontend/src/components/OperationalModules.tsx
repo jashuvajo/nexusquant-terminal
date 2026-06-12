@@ -559,11 +559,19 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const replay = auto.replay ?? { storedSnapshots: 0 };
   const dailyReport = auto.dailyReport ?? { paperTrades: 0, openTrades: 0, wins: 0, losses: 0, winRate: 0, grossProfit: 0, grossLoss: 0, profitFactor: 0, maxDrawdown: 0, reasonForLosses: {}, totalSignals: 0 };
   const paperSessions = auto.paperSessions;
+  const performance = auto.performanceAnalysis;
+  const profilePlan = performance?.institutionalAggressionProfiles;
+  const targetLock = auto.targetLock;
   const dayAggregate = paperSessions?.dayAggregate ?? dailyReport.dayAggregate;
   const currentSession = paperSessions?.currentSession;
   const completedSessions = paperSessions?.completedSessionsToday ?? [];
+  const breadth = snapshot.marketSnapshot?.breadth;
   const openPnl = openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
-  const closedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const recentClosedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const dayNetPnl = dailyReport.netPnl ?? dayAggregate?.netPnl ?? 0;
+  const dayClosedTrades = dailyReport.paperTrades ?? dayAggregate?.paperTrades ?? closedPaperTrades.length;
+  const dayProfitFactor = dailyReport.profitFactor ?? dayAggregate?.profitFactor ?? 0;
+  const dayWinRate = dailyReport.winRate ?? 0;
 
   return (
     <div className="space-y-4">
@@ -571,12 +579,18 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard label="Paper Mode" value={auto.paperTrading ? 'ON' : 'OFF'} helper={auto.shadowTradeAllSignals ? 'Shadow all signals' : 'Quality-gated'} tone={auto.paperTrading ? 'emerald' : 'amber'} />
           <MetricCard label="Open Paper Trades" value={openPaperTrades.length} helper={`Open PnL ${formatCurrency(openPnl)}`} tone="cyan" />
-          <MetricCard label="Closed Paper Trades" value={closedPaperTrades.length} helper={`Closed PnL ${formatCurrency(closedPnl)}`} tone="violet" />
-          <MetricCard label="Profit Factor" value={dailyReport.profitFactor} helper={`${dailyReport.winRate}% win rate`} tone="emerald" />
+          <MetricCard label="Day Paper Trades" value={dayClosedTrades} helper={`Day PnL ${formatCurrency(dayNetPnl)}`} tone={dayNetPnl >= 0 ? 'emerald' : 'rose'} />
+          <MetricCard label="Day Profit Factor" value={dayProfitFactor} helper={`${dayWinRate}% win rate`} tone={dayProfitFactor >= 2 ? 'emerald' : dayProfitFactor >= 1 ? 'amber' : 'rose'} />
           <MetricCard label="Signals / Tick" value={auto.signalsThisTick ?? 0} helper={`${skippedSignals.length} skipped shown`} tone="cyan" />
           <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
           <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
+          {breadth && (
+            <MetricCard label="Market Breadth" value={`${breadth.bias} ${breadth.score}`} helper={`${breadth.advancing} advancing / ${breadth.declining} declining`} tone={breadth.bias === 'BULLISH' ? 'emerald' : breadth.bias === 'BEARISH' ? 'rose' : 'amber'} />
+          )}
+          {targetLock?.enabled && (
+            <MetricCard label="Daily Target Lock" value={targetLock.locked || targetLock.projectedLocked ? 'LOCKED' : formatCurrency(targetLock.remainingToTarget)} helper={`${targetLock.dayQuality ?? 'DAY'} ${targetLock.targetPct ?? ''}% | Projected ${formatCurrency(targetLock.projectedNetPnl)}`} tone={targetLock.locked || targetLock.projectedLocked ? 'emerald' : 'amber'} />
+          )}
           {paperSessions?.rotationEnabled && (
             <>
               <MetricCard label="Session" value={`#${currentSession?.sessionNumber ?? dailyReport.sessionNumber ?? 1}`} helper={currentSession?.id ? `${currentSession.id.slice(-12)}` : 'Active paper session'} tone="cyan" />
@@ -592,9 +606,103 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         )}
         <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-300">
           Reset endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/reset</span> | Status endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/status</span>
+          {' '}| Recent closed shown: <span className="font-mono text-cyan-200">{closedPaperTrades.length}</span> ({formatCurrency(recentClosedPnl)})
           {paperSessions?.rotationEnabled && <> | Sessions: <span className="font-mono text-cyan-200">/api/auto-trader/paper-sessions</span></>}
+          {performance && <> | Analysis: <span className="font-mono text-cyan-200">/api/auto-trader/performance-analysis</span></>}
         </div>
       </Card>
+
+      {snapshot.marketSnapshot && (
+        <Card title="Market Breadth Universe" eyebrow="Participation confirmation used by paper trade quality gate">
+          <div className="grid gap-3 md:grid-cols-4">
+            <MetricCard label="Breadth Bias" value={snapshot.marketSnapshot.breadth?.bias ?? 'N/A'} helper={`Score ${snapshot.marketSnapshot.breadth?.score ?? 0}`} tone={snapshot.marketSnapshot.breadth?.bias === 'BULLISH' ? 'emerald' : snapshot.marketSnapshot.breadth?.bias === 'BEARISH' ? 'rose' : 'amber'} />
+            <MetricCard label="Coverage" value={`${snapshot.marketSnapshot.count ?? 0}/${snapshot.marketSnapshot.breadthQuality?.minimumRecommended ?? 15}`} helper={snapshot.marketSnapshot.breadthQuality?.sufficient ? 'Sufficient' : 'Limited'} tone={snapshot.marketSnapshot.breadthQuality?.sufficient ? 'emerald' : 'amber'} />
+            <MetricCard label="Advancing" value={snapshot.marketSnapshot.breadth?.advancing ?? 0} helper="Configured universe" tone="emerald" />
+            <MetricCard label="Declining" value={snapshot.marketSnapshot.breadth?.declining ?? 0} helper="Configured universe" tone="rose" />
+          </div>
+          <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
+            <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">Tracked indices/sectors</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(snapshot.marketSnapshot.configuredInstruments ?? []).map((item) => (
+                <span key={item} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 font-mono text-[11px] text-slate-300">{item.replace('NSE_INDEX|', '').replace('BSE_INDEX|', '')}</span>
+              ))}
+            </div>
+            {snapshot.marketSnapshot.breadthQuality?.message && <p className="mt-3 text-amber-200">{snapshot.marketSnapshot.breadthQuality.message}</p>}
+          </div>
+        </Card>
+      )}
+
+      {performance && profilePlan && (
+        <Card title="Paper Performance Optimizer" eyebrow="Best observed bucket, side, symbol and time-based aggression schedule">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <MetricCard label="Daily Target" value={formatCurrency(performance.target.dailyProfitAmount)} helper={`${performance.target.dailyProfitPct}% of capital`} tone="emerald" />
+            <MetricCard label="Current Day Net" value={formatCurrency(performance.target.currentNetPnl)} helper={`Remaining ${formatCurrency(performance.target.remainingToTarget)}`} tone={performance.target.currentNetPnl >= 0 ? 'emerald' : 'rose'} />
+            <MetricCard label="Best Window" value={performance.bestObserved.bucket ?? 'n/a'} helper={`PF ${performance.bestObserved.bucket ? performance.byBucket[performance.bestObserved.bucket]?.profitFactor ?? 0 : 0}`} tone="cyan" />
+            <MetricCard label="Best Symbol / Side" value={`${performance.bestObserved.symbol ?? 'n/a'} ${performance.bestObserved.side ?? ''}`} helper="From today's paper trades" tone="violet" />
+            <MetricCard label="Base Profile" value={profilePlan.recommendedBaseProfile.replaceAll('_', ' ')} helper="Dynamic by time window" tone="amber" />
+            {performance.rollingProof && <MetricCard label="Rolling Proof PF" value={performance.rollingProof.profitFactor} helper={`${performance.rollingProof.paperTrades}/${performance.rollingProof.windowTrades} trades | DD ${performance.rollingProof.maxDrawdownPct}%`} tone={performance.rollingProof.profitFactor >= 2 ? 'emerald' : 'amber'} />}
+            {performance.liveReadiness && <MetricCard label="Live Readiness" value={performance.liveReadiness.ready ? 'PASS' : 'NO'} helper={performance.liveReadiness.mode.replaceAll('_', ' ')} tone={performance.liveReadiness.ready ? 'emerald' : 'rose'} />}
+            {performance.breadthReadiness && <MetricCard label="Breadth Coverage" value={`${performance.breadthReadiness.count}/${performance.breadthReadiness.recommendedCount}`} helper={performance.breadthReadiness.sufficient ? 'Institutional-grade' : 'Add more instruments'} tone={performance.breadthReadiness.sufficient ? 'emerald' : 'amber'} />}
+          </div>
+          {performance.liveReadiness && (
+            <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
+              <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">100-trade proof gate</p>
+              <p className="mt-2">{performance.liveReadiness.message}</p>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {performance.liveReadiness.checks.map((check) => (
+                  <div key={check.name} className={check.passed ? 'text-emerald-300' : 'text-rose-300'}>
+                    {check.passed ? 'PASS' : 'FAIL'} {check.name}: {JSON.stringify(check.value)} / {JSON.stringify(check.required)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {profilePlan.bestTiming && (
+            <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4 text-sm text-emerald-100">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-200">Best timing profile</p>
+              <p className="mt-2 font-semibold">{profilePlan.bestTiming.primaryWindowIst} IST | {profilePlan.bestTiming.primaryProfile.replaceAll('_', ' ')} | {profilePlan.bestTiming.primarySetup}</p>
+              <p className="mt-1 text-xs text-emerald-100/80">{profilePlan.bestTiming.rule}</p>
+              <p className="mt-1 text-xs text-amber-100/80">Avoid: {profilePlan.bestTiming.avoidWindowsIst.join(', ')}</p>
+            </div>
+          )}
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {Object.entries(profilePlan.timeWindowSettings).map(([bucket, plan]) => (
+              <div key={bucket} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4 text-sm text-slate-300">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-white">{bucket.replaceAll('_', ' ')}</span>
+                  <span className="text-cyan-200">{plan.profile.replaceAll('_', ' ')}</span>
+                </div>
+                <div className="mt-2 grid gap-2 text-xs sm:grid-cols-4">
+                  <span>{plan.windowIst ?? 'Timing n/a'} IST</span>
+                  <span>{plan.permission?.replaceAll('_', ' ') ?? 'Selective'}</span>
+                  <span>Alloc x{plan.allocationPctMultiplier}</span>
+                  <span>TQS {plan.minEntryTqs}</span>
+                  <span>Runner {plan.minRunnerScore}</span>
+                  <span>Hold {plan.maxHoldSeconds}s</span>
+                </div>
+                <p className="mt-2 text-xs text-slate-400">{plan.note}</p>
+              </div>
+            ))}
+          </div>
+          <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-300">
+            {profilePlan.why.map((item) => <li key={item}>{item}</li>)}
+          </ul>
+          {performance.recentPostmortems && performance.recentPostmortems.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
+              <p className="font-bold uppercase tracking-[0.18em] text-violet-200">Recent AI postmortems</p>
+              <div className="mt-3 space-y-2">
+                {performance.recentPostmortems.slice(-3).reverse().map((item) => (
+                  <div key={item.id} className="rounded-xl border border-slate-800 p-3">
+                    <p className={item.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{item.symbol} {item.side} | {formatCurrency(item.pnl)} | {item.quality}</p>
+                    <p className="mt-1 text-slate-400">{item.findings.join(' | ')}</p>
+                    <p className="mt-1 text-cyan-200">{item.nextActions.join(' | ')}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
 
       {paperSessions?.rotationEnabled && completedSessions.length > 0 && (
         <Card title="Completed Paper Sessions Today" eyebrow="Saved when 8 losses or profit target hits — fresh session starts immediately">
@@ -620,6 +728,13 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
             <MetricCard label="Mindset State" value={auto.psychology.state.replaceAll('_', ' ')} helper={auto.psychology.tradePermission.replaceAll('_', ' ')} tone={auto.psychology.tradePermission === 'WAIT' || auto.psychology.tradePermission === 'BLOCK_NEW_TRADES' ? 'rose' : 'emerald'} />
             <MetricCard label="Discipline Score" value={auto.psychology.disciplineScore} helper="Higher means calmer selection" tone={auto.psychology.disciplineScore >= 80 ? 'emerald' : auto.psychology.disciplineScore >= 60 ? 'amber' : 'rose'} />
             <MetricCard label="Emotional Risks" value={auto.psychology.emotionalRisks.length} helper={auto.psychology.emotionalRisks.join(', ') || 'None'} tone={auto.psychology.emotionalRisks.length ? 'amber' : 'emerald'} />
+            {auto.psychology.aiCoach && (
+              <>
+                <MetricCard label="AI Coach Mode" value={auto.psychology.aiCoach.mode.replaceAll('_', ' ')} helper={`Urgency ${auto.psychology.aiCoach.urgency}`} tone={auto.psychology.aiCoach.urgency === 'HIGH' ? 'rose' : auto.psychology.aiCoach.urgency === 'MEDIUM' ? 'amber' : 'emerald'} />
+                <MetricCard label="Coach Confidence" value={auto.psychology.aiCoach.confidenceScore} helper={`Cooldown ${auto.psychology.aiCoach.cooldownMinutes}m`} tone={auto.psychology.aiCoach.confidenceScore >= 70 ? 'emerald' : auto.psychology.aiCoach.confidenceScore >= 45 ? 'amber' : 'rose'} />
+                <MetricCard label="Best Mindset Edge" value={`${auto.psychology.aiCoach.profileGuidance.bestSymbol ?? 'n/a'} ${auto.psychology.aiCoach.profileGuidance.bestSide ?? ''}`} helper={auto.psychology.aiCoach.profileGuidance.bestBucket ?? 'Waiting for data'} tone="cyan" />
+              </>
+            )}
             {auto.psychology.exitAdjustments && (
               <>
                 <MetricCard label="Psych Stop" value={auto.psychology.exitAdjustments.adjustedStopPoints} helper={`Base ${auto.psychology.exitAdjustments.baseStopPoints}`} tone="amber" />
@@ -642,6 +757,45 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
               </ul>
             </div>
           </div>
+          {auto.psychology.aiCoach && (
+            <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-300/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-200">AI Psychological Coach</p>
+              <p className="mt-2 text-sm font-semibold text-white">{auto.psychology.aiCoach.nextAction}</p>
+              <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Diagnosis</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    {auto.psychology.aiCoach.diagnosis.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-200">Intervention Script</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    {auto.psychology.aiCoach.interventionScript.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-200">Anti-Revenge Rules</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    {auto.psychology.aiCoach.antiRevengeRules.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <div className="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-300">
+                  <p className="font-bold text-cyan-200">Pre-trade checklist</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {auto.psychology.aiCoach.preTradeChecklist.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+                <div className="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-300">
+                  <p><span className="font-bold text-emerald-200">Breathing:</span> {auto.psychology.aiCoach.breathingProtocol}</p>
+                  <p className="mt-2"><span className="font-bold text-violet-200">Journal:</span> {auto.psychology.aiCoach.journalPrompt}</p>
+                  <p className="mt-2 text-emerald-200">{auto.psychology.aiCoach.positiveReinforcement}</p>
+                </div>
+              </div>
+            </div>
+          )}
           <p className="mt-4 rounded-2xl bg-slate-950/60 p-3 text-sm text-slate-300">{auto.psychology.mantra}</p>
         </Card>
       )}

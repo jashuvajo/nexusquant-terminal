@@ -209,6 +209,8 @@ export interface MarketSnapshotBreadth {
   source?: string;
   updatedAt?: string;
   count?: number;
+  configuredInstruments?: string[];
+  breadthQuality?: { sufficient: boolean; minimumRecommended: number; message: string };
   breadth?: { advancing: number; declining: number; unchanged: number; score: number; bias: string };
   gainers?: Array<Record<string, unknown>>;
   losers?: Array<Record<string, unknown>>;
@@ -297,7 +299,7 @@ export interface InstitutionalReadinessState { target: number; overall: number; 
 
 export interface NewsState { available: boolean; unavailableReason?: string | null; sentiment: string; score: number; eventRisk: string; articles: Array<{ title: string; sentiment: string; eventRisk: boolean; source?: unknown; publishedAt?: unknown }>; impact: { raiseTqs: boolean; allowRunnerBias: boolean; avoidFreshTrades: boolean } }
 
-export interface ExplosiveRunnerState { strategyType: string; candidate: boolean; confidence: string; score: number; symbol?: MarketSymbol | string; side?: 'CALL' | 'PUT' | string; strike?: number; expiry?: string; instrumentKey?: string | null; premium?: number; lastPremium?: number; targetPremiumPct: number; hardStopPct: number; trailPct: number; partialExitPct: number; runnerPct: number; reasons: string[]; dataStatus: Record<string, unknown>; metrics: Record<string, number>; monitoringCadenceSeconds?: number; watchMode?: string; }
+export interface ExplosiveRunnerState { strategyType: string; candidate: boolean; confidence: string; score: number; symbol?: MarketSymbol | string; side?: 'CALL' | 'PUT' | string; strike?: number; expiry?: string; instrumentKey?: string | null; premium?: number; lastPremium?: number; targetPremiumPct: number; hardStopPct: number; trailPct: number; partialExitPct: number; runnerPct: number; eliteRunner?: boolean; maxPointsPlan?: Record<string, unknown>; reasons: string[]; dataStatus: Record<string, unknown>; metrics: Record<string, number>; monitoringCadenceSeconds?: number; watchMode?: string; }
 
 export interface EntryModelState { model: string; state: string; openingRangeHigh?: number; openingRangeLow?: number; spot?: number; retestConfirmed: boolean; failedBreakout: boolean; direction?: string; }
 
@@ -420,7 +422,7 @@ export interface AutoTraderState {
   liveTradingEnabled: boolean;
   autoTradingStopped: boolean;
   signalsThisTick: number;
-  skippedSignals: Array<{ candidate?: string; reason: string; quality?: Record<string, unknown> }>;
+  skippedSignals: Array<{ candidate?: string; reason: string; quality?: Record<string, unknown> & { aiPrediction?: Record<string, unknown> } }>;
   openPaperTrades: PaperTrade[];
   closedPaperTrades: PaperTrade[];
   orderLifecycle: PaperLifecycleEvent[];
@@ -445,6 +447,29 @@ export interface AutoTraderState {
       adjustedMaxHoldSeconds: number;
       reason?: string | null;
     };
+    aiCoach?: {
+      mode: string;
+      urgency: string;
+      sessionBucket: string;
+      nextAction: string;
+      cooldownMinutes: number;
+      diagnosis: string[];
+      interventionScript: string[];
+      preTradeChecklist: string[];
+      breathingProtocol: string;
+      journalPrompt: string;
+      antiRevengeRules: string[];
+      positiveReinforcement: string;
+      profileGuidance: {
+        baseProfile?: string | null;
+        bestBucket?: string | null;
+        bestSymbol?: string | null;
+        bestSide?: string | null;
+      };
+      confidenceScore: number;
+      source: string;
+      findingsUsed: string[];
+    };
     mantra: string;
   };
   onlineLearning: { enabled: boolean; pretrained?: boolean; priorVersion?: string; mode: string; samples: number; score?: number; learningScore?: number; paperSamples?: number; liveSamples?: number; profitFactor?: number; calibration?: Record<string, unknown>; lastUpdatedAt?: string; note: string };
@@ -457,6 +482,7 @@ export interface AutoTraderState {
     winRate: number;
     grossProfit: number;
     grossLoss: number;
+    netPnl?: number;
     profitFactor: number;
     maxDrawdown: number;
     sessionId?: string;
@@ -468,7 +494,38 @@ export interface AutoTraderState {
     reasonForLosses: Record<string, number>;
   };
   paperSessions?: PaperSessionsState;
+  performanceAnalysis?: PaperPerformanceAnalysis;
+  targetLock?: {
+    enabled: boolean;
+    targetAmount: number;
+    targetPct?: number;
+    dayQuality?: string;
+    qualityReason?: string;
+    qualityMetrics?: Record<string, number>;
+    closedNetPnl: number;
+    openMarkedPnl: number;
+    projectedNetPnl: number;
+    remainingToTarget: number;
+    locked: boolean;
+    projectedLocked: boolean;
+    mode: string;
+    reason?: string;
+    lockedTrades?: PaperTrade[];
+  };
   sessionRotation?: { rotated?: boolean; dailyHalt?: boolean; reason?: string; endedSession?: Record<string, unknown>; newSession?: Record<string, unknown> } | null;
+}
+
+export interface PaperPerformanceSummary {
+  paperTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  grossProfit: number;
+  grossLoss: number;
+  netPnl: number;
+  profitFactor: number;
+  avgPnl: number;
+  maxDrawdown: number;
 }
 
 export interface PaperDayAggregate {
@@ -507,10 +564,94 @@ export interface PaperSessionRecord {
 
 export interface PaperSessionsState {
   rotationEnabled: boolean;
+  singleDailySession?: boolean;
+  targetLockEnabled?: boolean;
   currentSession: { id?: string; sessionNumber?: number; startedAt?: string; status?: string; report?: Record<string, unknown> };
   completedSessionsToday: PaperSessionRecord[];
   dayAggregate: PaperDayAggregate;
   totalCompletedSessions: number;
+}
+
+export interface PaperPerformanceAnalysis {
+  tradingDay: string;
+  target: {
+    capital: number;
+    dailyProfitAmount: number;
+    dailyProfitPct: number;
+    dayQuality?: string;
+    qualityReason?: string;
+    tiers?: Record<string, number>;
+    currentNetPnl: number;
+    remainingToTarget: number;
+  };
+  summary: PaperPerformanceSummary;
+  byBucket: Record<string, PaperPerformanceSummary>;
+  bySymbol: Record<string, PaperPerformanceSummary>;
+  bySide: Record<string, PaperPerformanceSummary>;
+  rollingProof?: PaperPerformanceSummary & {
+    windowTrades: number;
+    sampleComplete: boolean;
+    maxDrawdownPct: number;
+    avgWin: number;
+    avgLoss: number;
+    expectancy: number;
+  };
+  liveReadiness?: {
+    ready: boolean;
+    mode: string;
+    message: string;
+    checks: Array<{ name: string; passed: boolean; value: unknown; required: unknown }>;
+  };
+  recentPostmortems?: Array<{
+    id: string;
+    symbol: string;
+    side: string;
+    bucket: string;
+    pnl: number;
+    exitReason: string;
+    quality: string;
+    findings: string[];
+    nextActions: string[];
+  }>;
+  breadthReadiness?: {
+    available: boolean;
+    count: number;
+    recommendedCount: number;
+    sufficient: boolean;
+    breadth: Record<string, unknown>;
+    message: string;
+  };
+  bestObserved: {
+    bucket?: string | null;
+    symbol?: string | null;
+    side?: string | null;
+  };
+  institutionalAggressionProfiles: {
+    recommendedBaseProfile: string;
+    why: string[];
+    bestObservedBucket?: string | null;
+    bestObservedSymbol?: string | null;
+    bestObservedSide?: string | null;
+    timeWindowSettings: Record<string, {
+      windowIst?: string;
+      profile: string;
+      permission?: string;
+      allocationPctMultiplier: number;
+      minEntryTqs: number;
+      minRunnerScore: number;
+      maxHoldSeconds: number;
+      note: string;
+    }>;
+    bestTiming?: {
+      primaryWindowIst: string;
+      primaryBucket: string;
+      primaryProfile: string;
+      primarySetup: string;
+      avoidWindowsIst: string[];
+      rule: string;
+    };
+  };
+  rulesApplied: string[];
 }
 
 export interface TerminalSnapshot {

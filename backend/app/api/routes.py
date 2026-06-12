@@ -165,6 +165,7 @@ async def deployment_status(
         "runtimeValidation": engine.validate_runtime(),
         "optimizerValidation": get_strategy_optimizer(settings, get_upstox(settings, auth_service)).validate_runtime(),
         "environment": settings.environment,
+        "backendCommit": os.getenv("NEXUSQUANT_BACKEND_COMMIT"),
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         "railwayService": os.getenv("RAILWAY_SERVICE_NAME"),
         "upstoxConfigured": token_status["configured"],
@@ -176,6 +177,7 @@ async def deployment_status(
             "/api/upstox/callback",
             "/api/upstox/token/status",
             "/api/upstox/token/diagnostics",
+            "/api/upstox/token/persist",
             "/api/upstox/account-summary",
             "/api/market/expiries/NIFTY",
             "/api/market/snapshot/NIFTY",
@@ -184,6 +186,7 @@ async def deployment_status(
             "/api/institutional/readiness/NIFTY",
             "/api/market/news/NIFTY",
             "/api/auto-trader/status",
+            "/api/auto-trader/performance-analysis",
             "/api/auto-trader/reset",
             "/api/ai-learning/status",
             "/api/ai-learning/export",
@@ -221,11 +224,36 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
             snapshots[symbol] = result
     if not snapshots:
         raise HTTPException(status_code=503, detail=errors)
+    settings = get_settings()
+    primary_symbol = settings.primary_symbol.upper()
+    primary = snapshots.get(primary_symbol) or snapshots.get("NIFTY") or snapshots.get("SENSEX") or next(iter(snapshots.values()))
     candidates = []
     for symbol, snapshot in snapshots.items():
         for trade in snapshot.get("suggestedTrades") or []:
             candidates.append({"symbol": symbol, **trade})
-    payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
+    market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
+    try:
+        instruments = settings.market_snapshot_instrument_list
+        if instruments:
+            client = get_upstox(settings, get_upstox_auth(settings))
+            try:
+                quote_payload = await client.full_market_quote(instruments)
+            except Exception:
+                instruments = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
+                quote_payload = await client.full_market_quote(instruments)
+            market_snapshot = {"available": True, **summarize_market_movers(instruments, quote_payload)}
+    except Exception as exc:
+        market_snapshot = {"available": False, "reason": str(exc)}
+    payload = {
+        **primary,
+        "type": "multi_snapshot",
+        "displaySymbol": primary.get("symbol"),
+        "backgroundSymbols": ["NIFTY", "SENSEX"],
+        "snapshots": snapshots,
+        "symbolErrors": errors,
+        "executionCandidates": candidates,
+        "marketSnapshot": market_snapshot,
+    }
     session_state = current_session_state()
     if session_state.phase == "LIVE_MARKET":
         payload["autoTrader"] = await auto_engine.process(payload)
@@ -258,7 +286,11 @@ async def market_movers(settings: Settings = Depends(get_settings), client: Upst
     if not instruments:
         raise HTTPException(status_code=400, detail="MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty.")
     try:
-        payload = await client.full_market_quote(instruments)
+        try:
+            payload = await client.full_market_quote(instruments)
+        except UpstoxDataError:
+            instruments = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
+            payload = await client.full_market_quote(instruments)
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return summarize_market_movers(instruments, payload)
@@ -322,6 +354,19 @@ async def upstox_token_diagnostics(settings: Settings = Depends(get_settings), a
         "tokenStatus": status,
         "note": "Token value is intentionally not returned.",
     }
+
+
+@router.get("/upstox/token/persist")
+async def upstox_token_persist(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    """Re-persist the current token to all durable stores (file + Redis + memory).
+
+    Call this after manually setting UPSTOX_ACCESS_TOKEN in the environment,
+    after copying a token file onto the persistent volume, or any time you want to
+    ensure the token is cached across all storage tiers without re-running OAuth.
+    """
+    result = await auth_service.warm_token_cache()
+    status = await auth_service.token_status()
+    return {"persisted": result.get("warmed", False), "warmResult": result, "tokenStatus": status}
 
 
 @router.get("/upstox/account-summary")
@@ -911,6 +956,11 @@ async def auto_trader_paper_sessions(limit: int = 50, engine: AutoTraderEngine =
     return engine.paper_sessions_history(limit)
 
 
+@router.get("/auto-trader/performance-analysis")
+async def auto_trader_performance_analysis(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.performance_analysis()
+
+
 @router.get("/risk/profiles")
 async def risk_profiles(settings: Settings = Depends(get_settings)) -> dict:
     return {"activeProfile": settings.aggression_profile, "profiles": profile_list()}
@@ -964,6 +1014,11 @@ async def upstox_callback_alias(
 @alias_router.get("/upstox/token/status")
 async def upstox_token_status_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
     return await upstox_token_status(auth_service)
+
+
+@alias_router.get("/upstox/token/persist")
+async def upstox_token_persist_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    return await upstox_token_persist(auth_service)
 
 
 @alias_router.get("/deployment/status")
