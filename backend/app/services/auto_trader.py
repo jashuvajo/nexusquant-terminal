@@ -177,6 +177,7 @@ class AutoTraderEngine:
         self.closed_paper = AutoTraderEngine._shared_closed_paper
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
         self._latest_market_snapshot: dict[str, Any] = {}
+        self._latest_news_state: dict[str, Any] = {}
         self._load_replay_file()
         self._load_paper_trades_file()
 
@@ -192,6 +193,11 @@ class AutoTraderEngine:
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         self._latest_market_snapshot = payload.get("marketSnapshot") or {}
+        for _snap in snapshots.values():
+            _ns = _snap.get("newsState")
+            if isinstance(_ns, dict) and _ns.get("available"):
+                self._latest_news_state = _ns
+                break
         cached_snapshot = self._all_snapshots_cached(snapshots)
         signal_cooldown_seconds = int(session_adj.get("duplicateCooldownSeconds") or self.settings.paper_duplicate_signal_cooldown_seconds)
         market_phase = str(payload.get("marketPhase") or MarketPhase.LIVE_MARKET.value)
@@ -1382,7 +1388,7 @@ class AutoTraderEngine:
         except ValueError:
             phase = MarketPhase.LIVE_MARKET
         regime = str(payload.get("regime") or payload.get("strategy", {}).get("router") or "NORMAL")
-        return paper_session_adjustments(
+        result = paper_session_adjustments(
             self.settings.aggression_profile,
             phase,
             regime,
@@ -1399,6 +1405,23 @@ class AutoTraderEngine:
             open_drive_profit_stop_pct=float(self.settings.open_drive_profit_stop_pct),
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
         )
+        news = self._latest_news_state or {}
+        impact = news.get("impact") or {}
+        if impact.get("avoidFreshTrades") and not result.get("blockNewPaperTrades"):
+            result["blockNewPaperTrades"] = True
+            result["blockReason"] = f"News: avoid entries — {news.get('eventRisk')} risk, {news.get('sentiment')} sentiment"
+            result.setdefault("adjustments", []).append("News avoidFreshTrades: paper entries paused")
+        elif impact.get("raiseTqs"):
+            result["minEntryTqs"] = int(result.get("minEntryTqs", 74)) + 4
+            result.setdefault("adjustments", []).append(f"News event risk ({news.get('eventRisk')}): TQS floor +4")
+        if impact.get("allowRunnerBias"):
+            result["minRunnerScore"] = max(68.0, float(result.get("minRunnerScore", 78.0)) - 5.0)
+            result.setdefault("adjustments", []).append("News confirms direction: runner score threshold -5")
+        result["newsImpact"] = impact
+        result["newsSentiment"] = news.get("sentiment", "neutral")
+        result["newsEventRisk"] = news.get("eventRisk", "LOW")
+        result["newsTradingImplication"] = news.get("tradingImplication")
+        return result
 
     def _passes_high_confidence_gate(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> tuple[bool, str]:
         if not self.settings.paper_high_confidence_only:
@@ -1631,6 +1654,17 @@ class AutoTraderEngine:
             score -= 18.0
         if breadth.get("available"):
             score += 10.0 if breadth.get("aligned") else -18.0
+
+        news = self._latest_news_state or {}
+        news_impact = news.get("impact") or {}
+        if news_impact.get("avoidFreshTrades"):
+            score -= 40.0
+        elif news_impact.get("raiseTqs"):
+            score -= 7.0
+        if news_impact.get("allowRunnerBias") and is_runner:
+            bias_side = str(news_impact.get("biasSide") or "")
+            if not bias_side or bias_side == side:
+                score += 12.0
 
         expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
         if is_runner:
